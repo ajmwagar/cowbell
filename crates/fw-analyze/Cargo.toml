@@ -1,0 +1,17 @@
+[package]
+name = "fw-analyze"
+description = "Firmware image analysis CLI: entropy scanning, magic/header inspection, hex dumping, checksum brute-forcing, and image diffing for the cowbell TR-6S research project."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "fw-analyze"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
