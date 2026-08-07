@@ -136,6 +136,15 @@ impl Backup {
         self.raw.clone()
     }
 
+    /// Mutable access to the raw bytes, for low-level edits (e.g. a builder
+    /// writing step velocities). `to_bytes()` reflects whatever is written here.
+    /// NOTE: editing a record does not recompute its per-record checksum
+    /// (`+0x08`, still unidentified), so edited backups are for analysis, not
+    /// yet device-safe writes.
+    pub fn raw_mut(&mut self) -> &mut [u8] {
+        &mut self.raw
+    }
+
     pub fn magic(&self) -> [u8; 4] {
         self.magic
     }
@@ -493,6 +502,30 @@ impl Pattern {
         Some(StepWord {
             raw: [raw[o], raw[o + 1], raw[o + 2], raw[o + 3]],
         })
+    }
+
+    /// Low-level write: set a step's velocity byte (0 = off). Returns false if
+    /// out of range. Does not touch the record checksum — see [`Backup::raw_mut`].
+    pub fn set_step_velocity(
+        &self,
+        raw: &mut [u8],
+        variation: usize,
+        track: usize,
+        step: usize,
+        velocity: u8,
+    ) -> bool {
+        if variation >= PATTERN_VARIATIONS
+            || track >= PATTERN_STEP_TRACKS
+            || step >= PATTERN_STEPS_PER_TRACK
+        {
+            return false;
+        }
+        let o = self.step_word_offset(variation, track, step);
+        if o + 4 > self.offset + PATTERN_RECORD_SIZE || o >= raw.len() {
+            return false;
+        }
+        raw[o] = velocity;
+        true
     }
 }
 

@@ -4,6 +4,7 @@ members = [
     "crates/fw-analyze",
     "crates/fw-extract",
     "crates/tr-format",
+    "crates/tr-studio",
 ]
 
 [workspace.package]

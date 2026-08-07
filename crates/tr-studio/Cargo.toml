@@ -1,0 +1,22 @@
+[package]
+name = "tr-studio"
+description = "Ergonomic high-level API over tr-format for reading and building Roland TR-6S/TR-8S patterns and kits — step grids, named voices, pattern builders. The friendly layer of a FOSS alternative to Roland's TR-EDITOR."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tr_studio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tr-studio"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tr-format = { path = "../tr-format" }
