@@ -250,6 +250,44 @@ So even granting a known-plaintext pair for every one of the top ten blocks — 
 more than we have — you decrypt 6% of the image and learn nothing about the code.
 The codebook is 2^64 rows wide and we hold roughly one useful row.
 
+#### Does Ghidra corroborate the cipher? No — and that's the expected answer
+
+The ECB conclusion is a **black-box statistical property of the ciphertext**; it
+never depended on disassembly, which is its strength (it is reproducible via
+`fw-analyze blockmode`). Ghidra cannot confirm the *cipher identity*, because the
+code that would — the decrypt routine and key — lives in the **BMC bootloader in
+NOR**, which is not dumped (the object of bead `cowbell-8o5`). The encrypted
+`App1_Main` is ciphertext with nothing to disassemble, and `dd001_init_param.bin`
+is pure `DATA` (0 functions).
+
+What the loaded programs *do* establish is the **negative space**, and one trap to
+avoid. Sweeping every program in the Ghidra project (`tr6s.gpr`) for the candidate
+ciphers' signature constants and crypto-named routines:
+
+- **TR Editor (`TREditor_x86_64`, the desktop app) statically links all of
+  OpenSSL** — AES-NI, SHA-1/256/512, ChaCha20/Poly1305, RC4, Keccak, SEED,
+  Blowfish, GCM/GHASH, X25519, plus the full TLS ciphersuite string table. This is
+  the app's **Roland Cloud TLS networking**, not firmware handling. Every crypto
+  constant traces to it: the `0x9E3779B9` "TEA/XTEA delta" is inside
+  `_SEED_set_key` (SEED reuses the same golden-ratio constant), and the
+  `0x243F6A88` Blowfish P-array sits in an OpenSSL data table. The desktop app
+  never decrypts firmware — consistent with `ML::CRolandMessage::CheckSum` being
+  the **SysEx** checksum, not a firmware routine. The device decrypts its own
+  updates.
+- **The plaintext ARM panel-MCU firmware (`DD010`/`DD012_pnl_ARM`) has zero cipher
+  constants and zero crypto-named functions** — it is the IO/panel processor, off
+  the crypto path.
+
+Two consequences:
+
+1. **Corroboration in the negative.** The key and cipher are provably absent from
+   everything we hold, which is exactly why key recovery targets a NOR dump and
+   not any shipped file.
+2. **A false-positive trap, flagged.** Because OpenSSL bundles Blowfish, SEED, AES
+   et al., their constants appearing in the *desktop app* say **nothing** about the
+   firmware cipher. "TR Editor contains Blowfish, so the firmware is Blowfish" is a
+   misread of statically-linked library code — do not treat it as evidence.
+
 ### KEY FINDING: TR-6S and TR-8S share the encryption key (2026-08-07)
 
 Cross-correlating the encrypted `App1_Main` payloads of the TR-6S (`dd001`) and
