@@ -1,0 +1,21 @@
+[package]
+name = "tr-format"
+description = "Reader/writer for Roland TR-6S/TR-8S user-data formats (backup container, kits, patterns). Plaintext user data only — no firmware, no decryption. A FOSS alternative to Roland's TR-EDITOR / Roland Cloud."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tr_format"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tr-format"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true

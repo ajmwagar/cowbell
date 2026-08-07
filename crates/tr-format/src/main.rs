@@ -1,0 +1,85 @@
+//! `tr-format` — inspect Roland TR-6S/TR-8S backup containers.
+//!
+//! Plaintext user data only. Reads a `*_bak.bin` backup and lists its sections;
+//! the library guarantees a byte-exact round-trip, so this is a safe base for a
+//! FOSS librarian. No firmware, no decryption, never writes to a device.
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+use tr_format::Backup;
+
+#[derive(Parser)]
+#[command(
+    name = "tr-format",
+    version,
+    about = "Inspect Roland TR-6S/TR-8S backup containers (plaintext user data)",
+    long_about = None
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Print the file header (magic, version) and section directory.
+    Info {
+        /// A TR backup file (e.g. tr6s_bak.bin).
+        backup: PathBuf,
+    },
+    /// Verify that the backup round-trips byte-for-byte through the parser.
+    Verify {
+        /// A TR backup file.
+        backup: PathBuf,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Info { backup } => info(&backup),
+        Command::Verify { backup } => verify(&backup),
+    }
+}
+
+fn info(path: &std::path::Path) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let total = bytes.len();
+    let b = Backup::parse(bytes)?;
+    println!("file:    {}", path.display());
+    println!(
+        "magic:   {}   version: {}   size: {} bytes",
+        String::from_utf8_lossy(&b.magic()),
+        b.version(),
+        total
+    );
+    println!("sections:");
+    println!("  {:<6} {:>10} {:>12}  SHAPE", "TAG", "OFFSET", "PAYLOAD");
+    for s in b.sections() {
+        let shape = match s.array_shape(b.raw()) {
+            Some((count, rec)) => format!("{count} records x {rec} bytes"),
+            None => String::new(),
+        };
+        println!(
+            "  {:<6} 0x{:08x} {:>12}  {}",
+            s.tag_str(),
+            s.header_offset,
+            s.payload_len,
+            shape
+        );
+    }
+    Ok(())
+}
+
+fn verify(path: &std::path::Path) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let original = bytes.clone();
+    let b = Backup::parse(bytes)?;
+    if b.to_bytes() == original {
+        println!("OK: {} round-trips byte-for-byte", path.display());
+        Ok(())
+    } else {
+        anyhow::bail!("round-trip MISMATCH for {}", path.display());
+    }
+}

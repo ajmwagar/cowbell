@@ -51,6 +51,17 @@ dumps/
 extracted/
 **/extracted/
 
+# Device backups / exported user data. May contain factory (Roland) content
+# as well as the user's own kits/patterns/samples — keep all of it local.
+roland_backup_dump/
+**/BACKUP/
+**/EXPORT/
+**/SAMPLE/
+*.t6k
+*.t6p
+*_bak.bin
+*_bak.txt
+
 # Vendor update archives are tar, not *.bin — name the container extensions too
 # so an unpacked-in-place updater cannot slip past the *.bin rule above.
 *.tar
