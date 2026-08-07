@@ -69,11 +69,25 @@ fn kit(path: &std::path::Path, number: usize) -> Result<()> {
         .get(number.wrapping_sub(1))
         .with_context(|| format!("kit {number} out of range (1..={})", kits.len()))?;
     println!("Kit {number}: {}", k.name(raw));
-    println!("  voices (tone IDs are tentative — see docs/tr-format.md):");
-    let ids = k.voice_tone_ids(raw);
-    for (voice, id) in tr_format::VOICES.iter().zip(ids) {
-        let tone = b.tone_name(id).unwrap_or_default();
-        println!("    {voice}  id {id:>4}  {tone}");
+    println!(
+        "  {:<3} {:>4} {:<18} {:>4} {:>5} {:>4} {:>4} {:>4} {:>4}",
+        "V", "tone", "name", "tune", "decay", "lvl", "gain", "pan", "rev/dly"
+    );
+    for (voice, vp) in tr_format::VOICES.iter().zip(k.voices(raw)) {
+        let tone = b.tone_name(vp.tone).unwrap_or_default();
+        println!(
+            "  {:<3} {:>4} {:<18} {:>4} {:>5} {:>4} {:>4} {:>4} {:>2}/{:<2}",
+            voice,
+            vp.tone,
+            tone,
+            vp.tune,
+            vp.decay,
+            vp.level,
+            vp.gain,
+            vp.pan,
+            vp.reverb_send,
+            vp.delay_send
+        );
     }
     Ok(())
 }

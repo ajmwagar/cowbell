@@ -192,17 +192,69 @@ pub const KIT_NAME_LEN: usize = 16;
 /// The six TR-6S voice slots, in record order.
 pub const VOICES: [&str; 6] = ["BD", "SD", "LT", "HC", "CH", "OH"];
 
-// --- Tentative kit-record voice offsets --------------------------------------
-// TODO(controlled-diff): these were reversed from a SINGLE v1.51 backup. The
-// tone-ID field is cross-checked (kits 0-3 all resolve to sensible tones), so
-// it is fairly solid — but the rest of each voice block, and whether the layout
-// is stable across firmware versions, is NOT confirmed. Before trusting this for
-// *writing* kits, verify with a save-change-save diff (see docs/tr-format.md).
+// --- Kit-record voice block ---------------------------------------------------
+// CONFIRMED against Roland TR Editor's schema (Contents/Resources/Script/
+// Script.xml, structType `instCommon[0]`): the param order + ranges + defaults
+// match the backup bytes exactly (INST LEVEL def 255 -> +0x04=0xff, GAIN def 81
+// -> +0x05=0x51, PAN def 128 -> +0x06=0x80, DELAY SEND def 224 -> +0x08=0xe0,
+// LFO DEPTH def 128 -> +0x0b=0x80, all observed). Voice fields are contiguous
+// single bytes after the u16 tone. See docs/tr-format.md.
 
-/// Offset of voice 0's (BD) `u16` tone-ID within a kit record.
+/// Offset of voice 0's block within a kit record (BD). The `u16` tone-ID is at
+/// the block start.
 pub const VOICE_TONE_ID_OFFSET: usize = 0x194;
 /// Byte stride between consecutive voice blocks in a kit record.
 pub const VOICE_STRIDE: usize = 0x34;
+
+/// The confirmed `instCommon` voice parameters (offsets relative to the voice
+/// block start). Named per TR Editor's `Script.xml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceParams {
+    /// Tone ID (u16, 0–1023) — index into the `TONE` table.
+    pub tone: u16,
+    /// Tune (0–255, center 128).
+    pub tune: u8,
+    /// Decay (0–255).
+    pub decay: u8,
+    /// Level (0–255).
+    pub level: u8,
+    /// Gain (0–161).
+    pub gain: u8,
+    /// Pan (0–255, center 128).
+    pub pan: u8,
+    /// Reverb send (0–255).
+    pub reverb_send: u8,
+    /// Delay send (0–255).
+    pub delay_send: u8,
+    /// LFO switch (0/1).
+    pub lfo_switch: u8,
+    /// LFO destination (0–37).
+    pub lfo_dest: u8,
+    /// LFO depth (0–255).
+    pub lfo_depth: u8,
+    /// Category lock (0/1).
+    pub category_lock: u8,
+}
+
+impl VoiceParams {
+    /// Parse from a voice block (>= 0x0D bytes; the block is 0x34 total).
+    pub fn from_block(b: &[u8]) -> VoiceParams {
+        VoiceParams {
+            tone: u16::from_le_bytes([b[0x00], b[0x01]]),
+            tune: b[0x02],
+            decay: b[0x03],
+            level: b[0x04],
+            gain: b[0x05],
+            pan: b[0x06],
+            reverb_send: b[0x07],
+            delay_send: b[0x08],
+            lfo_switch: b[0x09],
+            lfo_dest: b[0x0a],
+            lfo_depth: b[0x0b],
+            category_lock: b[0x0c],
+        }
+    }
+}
 
 /// One `TONE` table entry (bytes): name[16] + params[20].
 pub const TONE_ENTRY_SIZE: usize = 0x24;
@@ -237,7 +289,7 @@ impl Kit {
     }
 
     /// The six voice tone-IDs (BD, SD, LT, HC, CH, OH), indices into the `TONE`
-    /// table. See the TODO on [`VOICE_TONE_ID_OFFSET`]: tentative layout.
+    /// table.
     pub fn voice_tone_ids(&self, raw: &[u8]) -> [u16; 6] {
         let mut ids = [0u16; 6];
         for (i, id) in ids.iter_mut().enumerate() {
@@ -245,6 +297,14 @@ impl Kit {
             *id = u16::from_le_bytes([raw[o], raw[o + 1]]);
         }
         ids
+    }
+
+    /// The six voices' full [`VoiceParams`] (BD, SD, LT, HC, CH, OH).
+    pub fn voices(&self, raw: &[u8]) -> [VoiceParams; 6] {
+        std::array::from_fn(|i| {
+            let o = self.offset + VOICE_TONE_ID_OFFSET + i * VOICE_STRIDE;
+            VoiceParams::from_block(&raw[o..o + VOICE_STRIDE])
+        })
     }
 }
 
@@ -486,6 +546,42 @@ mod tests {
         for &id in &ids {
             assert_eq!(b.tone_name(id).as_deref(), Some(names[id as usize].as_str()));
         }
+    }
+
+    #[test]
+    fn voice_params_map_to_confirmed_offsets() {
+        // A voice block set to TR Editor's instCommon defaults; assert each
+        // field lands at the schema-confirmed offset.
+        let mut blk = [0u8; VOICE_STRIDE];
+        blk[0x00] = 72; // tone lo (default 72)
+        blk[0x02] = 128; // tune
+        blk[0x03] = 128; // decay
+        blk[0x04] = 255; // level
+        blk[0x05] = 81; // gain
+        blk[0x06] = 128; // pan
+        blk[0x07] = 128; // reverb send
+        blk[0x08] = 224; // delay send
+        blk[0x09] = 1; // lfo switch
+        blk[0x0a] = 1; // lfo dest
+        blk[0x0b] = 128; // lfo depth
+        blk[0x0c] = 0; // category lock
+        let vp = VoiceParams::from_block(&blk);
+        assert_eq!(vp.tone, 72);
+        assert_eq!(vp.level, 255);
+        assert_eq!(vp.gain, 81);
+        assert_eq!(vp.pan, 128);
+        assert_eq!(vp.delay_send, 224);
+        assert_eq!(vp.lfo_switch, 1);
+    }
+
+    #[test]
+    fn kit_voices_reads_six_blocks() {
+        let bytes = synthetic_with_kit_and_tones();
+        let b = Backup::parse(bytes.0).unwrap();
+        let voices = b.kits()[0].voices(b.raw());
+        assert_eq!(voices.len(), 6);
+        assert_eq!(voices[0].tone, 1); // tone-IDs from the fixture
+        assert_eq!(voices[1].tone, 5);
     }
 
     #[test]

@@ -91,32 +91,43 @@ from one v1.51 backup: the *rest* of each 0x34 voice block (level/pan/tune/decay
 …), the exact TONE entry count, and cross-firmware stability are **not** yet
 confirmed. Don't trust it for *writing* kits until verified.
 
-#### Voice block (0x34 bytes) — tentative structural map
+#### Voice block (0x34 bytes) — CONFIRMED
 
-From value-distribution analysis over all 768 voice blocks + a blank-vs-active
-diff. **Types are inferred from default values; the names are guesses.** Only
-the tone ID is confirmed.
+Named from **TR Editor's schema** (`Contents/Resources/Script/Script.xml`,
+`structType instCommon[0]`) and verified: every schema default matches the
+observed byte at the mapped offset (LEVEL 255→`+0x04`, GAIN 81→`+0x05`, PAN
+128→`+0x06`, DELAY SEND 224→`+0x08`, LFO DEPTH 128→`+0x0B`). Params are
+contiguous single bytes after the u16 tone.
 
-| Off | Type | Default | Guess | Confidence |
-| --- | ---- | ------- | ----- | ---------- |
-| `+0x00` | u16 | — | **tone ID** | confirmed |
-| `+0x02` | u8 | `0x80` | pan (bipolar, center 0x80) | type likely, name guess |
-| `+0x03` | u8 | `0x80` | tune (bipolar) | type likely, name guess |
-| `+0x04` | u8 | `0xFF` | level or decay (unipolar max) | type likely, name guess |
-| `+0x05..0x0B` | — | `51 80 80 e0 01 01 80` | fixed template / reserved | — |
-| `+0x0C..0x1B` | — | `0x00` | padding | — |
-| `+0x1C..0x29` | mixed | `0x00` | sparse params (envelope/sends) | structural only |
-| `+0x2A..0x33` | — | `0x00` | padding | — |
+| Off | Field | Type | Range | Default |
+| --- | ----- | ---- | ----- | ------- |
+| `+0x00` | INST TONE | u16 | 0–1023 | 72 |
+| `+0x02` | INST TUNE | u8 | 0–255 (ctr 128) | 128 |
+| `+0x03` | INST DECAY | u8 | 0–255 | 128 |
+| `+0x04` | INST LEVEL | u8 | 0–255 | 255 |
+| `+0x05` | INST GAIN | u8 | 0–161 | 81 |
+| `+0x06` | INST PAN | u8 | 0–255 (ctr 128) | 128 |
+| `+0x07` | INST REVERB SEND | u8 | 0–255 | 128 |
+| `+0x08` | INST DELAY SEND | u8 | 0–255 | 224 |
+| `+0x09` | INST LFO SWITCH | u8 | 0–1 | 1 |
+| `+0x0A` | INST LFO DEST | u8 | 0–37 | 1 |
+| `+0x0B` | INST LFO DEPTH | u8 | 0–255 | 128 |
+| `+0x0C` | CATEGORY LOCK | u8 | 0–1 | 0 |
+| `+0x0D..0x0F` | RESERVE000–002 | u8 | 0–255 | 0 |
+| `+0x10..0x33` | RESERVE100–102 (+tail) | u32… | — | 0 |
 
-**Statistics have hit their ceiling for *naming*** — they can say `+0x02` is a
-centered bipolar param but not whether it's pan vs tune. Two ways to finish:
+Implemented as `VoiceParams` in the crate; `tr-format kit <n>` shows the named
+values. (This corrects the earlier statistical guesses — pan is `+0x06`, not
+`+0x02`; the "fixed template" `51 80 80 e0…` was just GAIN/PAN/SENDS/LFO at their
+defaults.)
 
-1. **Controlled diff** — save two kits differing by exactly one voice parameter,
-   diff (`fw-analyze diff --block`). Needs an SD reader.
-2. **Decompile TR-EDITOR** (Roland's official editor) — its code carries the
-   full data model (param names, ranges) and the SysEx address map, which would
-   *name* every field and confirm these offsets. Needs no SD reader. See
-   `docs/prior-art.md` / the software-surface avenue.
+**The schema oracle — `Script.xml`.** TR Editor's parameter layout is
+data-driven: the resolver (`CKoaValueRef::Associate` → `CKoaExpression`) walks a
+schema shipped as `Contents/Resources/Script/Script.xml` (794 KB, ~27.8k lines):
+`<struct>`/`<structType>` with `<address>`/`<size>`, and per-param `<name>`
+`<range>` `<default>` `<title>`. Section addresses match the backup
+(`kit`=`03 00 00 00`, `ptn`=`04 00 00 00`). This XML is the definitive map for
+the remaining records (patterns, FX, SYS) — parse it, don't guess.
 
 ## TR Editor data model (oracle)
 
