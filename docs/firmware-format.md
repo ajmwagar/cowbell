@@ -172,6 +172,44 @@ until the key is recovered, and the key + decryption routine live in the
   key we could never brute-force is trivial to *read* off the chip that stores
   it. And the NOR may hold the already-decrypted firmware, making the key moot.
 
+### "It's ECB, so XOR out the known plaintext and you have everything"
+
+A recurring suggestion, and worth answering precisely because the instinct — ECB
+is a weak mode, known plaintext helps — is right while the mechanism is not.
+
+The argument runs: block ciphers generate a keystream from key material and XOR
+it with the plaintext, so XOR-ing known plaintext back out recovers a key-only
+keystream, no need to identify the cipher. That describes a **stream cipher, or
+a block cipher in a keystream mode** (CTR / OFB / CFB). ECB is not one. In ECB
+each block is `C = E_K(P)`: the plaintext goes *through* the cipher's rounds, and
+there is no key-only stream behind it. `P ⊕ C` is just a number with no predictive
+value for any other block.
+
+**The evidence that says "ECB" is the same evidence that says "not a keystream."**
+Under CTR/OFB the keystream never repeats across an image, so identical plaintext
+at different offsets encrypts to *different* ciphertext and duplicate-block rates
+collapse to ~0%. We measure **29.89% duplicates at 8 bytes**, one block occurring
+**8,420 times**. Block repetition is the ECB fingerprint *because* ECB is not a
+keystream mode. Were this CTR or OFB, the shortcut would work and the image would
+already be open.
+
+The adjacent hypothesis that *would* make the suggestion correct — a short
+repeating XOR pad, which also yields duplicate blocks — is independently
+excluded by evidence item 2 above: XOR-ing the payload against the dominant block
+at all 8 alignments leaves entropy at 7.997/8.0.
+
+(The related claim that block ciphers "XOR key material at the end" describes
+**key whitening** — AES's AddRoundKey, Blowfish's P-array, the TEA family. It is
+one layer of a round function, not the whole transform; the data still traverses
+nonlinear key-dependent rounds, so it cannot be peeled off with a single XOR.)
+
+**What ECB does give us, stated correctly:** a *codebook*. A known
+plaintext/ciphertext pair lets you decrypt and forge exactly that block value
+wherever it occurs — which is real leverage, and already exploited above: the
+fill block is `E(K, padding)`, it identifies erased/padded regions, and it is the
+one pair a DES cracker would need. It does not extend to blocks we have never
+seen. The codebook is 2^64 rows wide and we hold one.
+
 ### KEY FINDING: TR-6S and TR-8S share the encryption key (2026-08-07)
 
 Cross-correlating the encrypted `App1_Main` payloads of the TR-6S (`dd001`) and
