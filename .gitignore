@@ -91,3 +91,6 @@ tr8s_projects/
 # macOS
 .DS_Store
 **/.DS_Store
+
+# Agent worktrees (transient)
+.claude/worktrees/
