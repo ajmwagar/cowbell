@@ -7,6 +7,7 @@
 //! Nothing here writes to a device. It is read-only analysis of image files
 //! the maintainer has dumped from hardware they own.
 
+mod blockmode;
 mod checksum;
 mod diff;
 mod entropy;
@@ -104,6 +105,21 @@ enum Command {
         offset: u64,
     },
 
+    /// Block-cipher mode analysis: ECB fingerprint vs. a keystream/XOR pad.
+    Blockmode {
+        /// Firmware image (or carved ciphertext region).
+        image: PathBuf,
+        /// Start offset of the ciphertext region.
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        /// Length of the region (default: to end of file).
+        #[arg(long)]
+        len: Option<u64>,
+        /// Candidate cipher block size in bytes.
+        #[arg(long, default_value_t = 8)]
+        block: usize,
+    },
+
     /// Shell out to `binwalk` if it is installed (signature scan by default).
     Binwalk {
         /// Firmware image.
@@ -128,6 +144,12 @@ fn main() -> Result<()> {
             step,
         } => entropy::run(&image, window, step.unwrap_or(window)),
         Command::Inspect { image, scan } => magic::run(&image, scan),
+        Command::Blockmode {
+            image,
+            offset,
+            len,
+            block,
+        } => blockmode::run(&image, offset, len, block),
         Command::Hexdump { image, offset, len } => hexdump::run(&image, offset, len),
         Command::Checksum {
             image,

@@ -193,10 +193,40 @@ collapse to ~0%. We measure **29.89% duplicates at 8 bytes**, one block occurrin
 keystream mode. Were this CTR or OFB, the shortcut would work and the image would
 already be open.
 
-The adjacent hypothesis that *would* make the suggestion correct — a short
-repeating XOR pad, which also yields duplicate blocks — is independently
-excluded by evidence item 2 above: XOR-ing the payload against the dominant block
-at all 8 alignments leaves entropy at 7.997/8.0.
+#### Measured refutation: the offset-independence test
+
+Repetition alone doesn't finish the argument, because a **repeating XOR pad**
+produces repeats too — and if that were the scheme, the suggestion would be
+right. The two cases separate cleanly on *where* the repeats land:
+
+- Under a keystream or pad of period `P`, two identical ciphertext blocks require
+  identical plaintext **and** offsets congruent mod `P`, so every gap between
+  occurrences is a multiple of `P`.
+- Under ECB, `C = E_K(P)` depends only on block contents, so repeats land at
+  **arbitrary** offsets and the gcd of the gaps collapses to the block size.
+
+Measured on the 8,420 occurrences of the dominant block (`fw-analyze blockmode`):
+
+| Test | Result |
+| ---- | ------ |
+| gcd of gaps between occurrences | **8** (= the block size) |
+| gaps that are not a multiple of 16 | **7,165 of 8,419** |
+
+So any pad must have period dividing 8. Each survivor dies individually:
+
+| Period | Why it's excluded |
+| ------ | ----------------- |
+| 1, 2, 4 | A pad of period `p` would make the dominant block `8/p` identical chunks. It splits into 8 / 4 / 2 **distinct** chunks respectively. |
+| 8 | XOR-ing the block out as a repeating pad at all 8 alignments leaves entropy **7.94–7.98/8** and ≤3.10% zero bytes — and that 3.10% is just the fill blocks mapping to themselves. A real pad would collapse the whole image to structure. |
+
+**No keystream or XOR pad of any period explains the data.** ECB over a genuine
+64-bit block cipher stands, and `P ⊕ C` yields nothing reusable.
+
+Reproduce with:
+
+```
+fw-analyze blockmode <image> --offset 96 --len 2529168
+```
 
 (The related claim that block ciphers "XOR key material at the end" describes
 **key whitening** — AES's AddRoundKey, Blowfish's P-array, the TEA family. It is
@@ -208,7 +238,17 @@ plaintext/ciphertext pair lets you decrypt and forge exactly that block value
 wherever it occurs — which is real leverage, and already exploited above: the
 fill block is `E(K, padding)`, it identifies erased/padded regions, and it is the
 one pair a DES cracker would need. It does not extend to blocks we have never
-seen. The codebook is 2^64 rows wide and we hold one.
+seen.
+
+And the codebook is far shallower than "you probably have all of it" implies:
+
+- The **10 most frequent block values cover 6.40%** of the image (20,238 of
+  316,146 blocks) — and that 6.4% is fill, the least interesting bytes in the file.
+- **89.9% of distinct block values occur exactly once** (199,188 of 221,652).
+
+So even granting a known-plaintext pair for every one of the top ten blocks — far
+more than we have — you decrypt 6% of the image and learn nothing about the code.
+The codebook is 2^64 rows wide and we hold roughly one useful row.
 
 ### KEY FINDING: TR-6S and TR-8S share the encryption key (2026-08-07)
 
