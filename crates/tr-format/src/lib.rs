@@ -28,8 +28,10 @@
 //! the retained bytes, never a re-serialization. This is the safety property a
 //! librarian needs: editing one section can never corrupt unknown/reserved data.
 //!
-//! Record-internal layout (individual kit/pattern fields) is not decoded yet;
-//! see `docs/tr-format.md` for the reversing plan.
+//! Record internals are decoded incrementally: kit framing, names, voice blocks
+//! and tone IDs; pattern headers, the variation/array-slot map, and the step
+//! word (velocity, sub step, ALTERNATE). Motion planes and per-step probability
+//! are still open — see `docs/tr-format.md`.
 
 use anyhow::{bail, Context, Result};
 
@@ -394,19 +396,132 @@ pub fn schema_value_size(ty: &str, range_max: u32) -> Option<usize> {
     })
 }
 
-/// A pattern step word (`int8x4`, 4 bytes). Byte 0 is the velocity; 0 = the step
-/// is off. (Higher bytes carry sub-step/flam/probability — not decoded yet.)
+/// A step's sub-step (retrigger) mode — TR Editor's `subStep` combo, whose
+/// string table is `1/2,1/3,1/4,FLAM`.
+///
+/// The stored field is the **number of hits**, not the combo index: `2`/`3`/`4`
+/// retrigger the step that many times within its slot, and `1` is the flam
+/// (a grace note, spaced by the pattern's `FLAM SPACING`). See
+/// [`StepWord::sub_step`] and `docs/tr-format.md` for the evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubStep {
+    /// Grace note before the beat; spacing comes from `ptnCmn.FLAM SPACING`.
+    Flam,
+    /// `1/2` — two hits in the step.
+    Half,
+    /// `1/3` — three hits in the step.
+    Third,
+    /// `1/4` — four hits in the step.
+    Quarter,
+}
+
+impl SubStep {
+    /// The stored encoding (1–4).
+    pub fn to_raw(self) -> u8 {
+        match self {
+            SubStep::Flam => 1,
+            SubStep::Half => 2,
+            SubStep::Third => 3,
+            SubStep::Quarter => 4,
+        }
+    }
+
+    /// Decode the stored field; `None` for 0 (no sub-step) or an unknown value.
+    pub fn from_raw(v: u8) -> Option<SubStep> {
+        Some(match v {
+            1 => SubStep::Flam,
+            2 => SubStep::Half,
+            3 => SubStep::Third,
+            4 => SubStep::Quarter,
+            _ => return None,
+        })
+    }
+
+    /// The label TR Editor shows (`FLAM`, `1/2`, `1/3`, `1/4`).
+    pub fn label(self) -> &'static str {
+        match self {
+            SubStep::Flam => "FLAM",
+            SubStep::Half => "1/2",
+            SubStep::Third => "1/3",
+            SubStep::Quarter => "1/4",
+        }
+    }
+}
+
+/// Bit mask of the sub-step field within step-word byte 1.
+pub const STEP_SUB_STEP_MASK: u8 = 0x07;
+/// Bit mask of the ALTERNATE flag within step-word byte 1.
+pub const STEP_ALTERNATE_MASK: u8 = 0x80;
+
+/// A pattern step word (`int8x4`, 4 bytes), decoded.
+///
+/// | Byte | Bits | Field |
+/// | ---- | ---- | ----- |
+/// | 0 | 0–7 | **velocity** (1–127; 0 = step off) |
+/// | 1 | 0–2 | **sub step** — 0 = none, else [`SubStep`] |
+/// | 1 | 3–6 | unknown (always 0 on the v1.51 reference backup) |
+/// | 1 | 7 | **ALTERNATE** flag |
+/// | 2–3 | — | unknown (always 0 on the v1.51 reference backup) |
+///
+/// TR Editor exposes exactly four per-step attributes — velocity, probability,
+/// sub step, alternate — so the unknown bits are where per-step **probability**
+/// (0–10) lives. It reads 0 for every step of every factory pattern in the
+/// reference backup, so its bit position is unconfirmed; per-step probability
+/// appears to be a later-firmware feature. The setters below preserve those
+/// bits, so editing a step can never destroy them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepWord {
     pub raw: [u8; 4],
 }
 
 impl StepWord {
+    /// Step velocity (0 = the step is off).
     pub fn velocity(&self) -> u8 {
         self.raw[0]
     }
+
+    /// Whether the step triggers at all.
     pub fn is_on(&self) -> bool {
         self.raw[0] != 0
+    }
+
+    /// The step's sub-step mode, or `None` if it plays a single hit.
+    pub fn sub_step(&self) -> Option<SubStep> {
+        SubStep::from_raw(self.raw[1] & STEP_SUB_STEP_MASK)
+    }
+
+    /// Whether the step is flagged ALTERNATE (plays the voice's alternate tone).
+    pub fn is_alternate(&self) -> bool {
+        self.raw[1] & STEP_ALTERNATE_MASK != 0
+    }
+
+    /// Set the velocity (0 turns the step off).
+    pub fn set_velocity(&mut self, velocity: u8) {
+        self.raw[0] = velocity;
+    }
+
+    /// Set (or clear, with `None`) the sub-step mode. Preserves every other bit.
+    pub fn set_sub_step(&mut self, sub: Option<SubStep>) {
+        let bits = sub.map_or(0, SubStep::to_raw);
+        self.raw[1] = (self.raw[1] & !STEP_SUB_STEP_MASK) | bits;
+    }
+
+    /// Set the ALTERNATE flag. Preserves every other bit.
+    pub fn set_alternate(&mut self, on: bool) {
+        if on {
+            self.raw[1] |= STEP_ALTERNATE_MASK;
+        } else {
+            self.raw[1] &= !STEP_ALTERNATE_MASK;
+        }
+    }
+
+    /// The bits this crate does not understand yet (byte 1 bits 3–6, bytes 2–3).
+    /// Zero on every step of the reference backup; non-zero means a step carries
+    /// something we would drop if we re-encoded from the typed view alone.
+    pub fn unknown_bits(&self) -> u32 {
+        u32::from(self.raw[1] & !(STEP_SUB_STEP_MASK | STEP_ALTERNATE_MASK))
+            | u32::from(self.raw[2]) << 8
+            | u32::from(self.raw[3]) << 16
     }
 }
 
@@ -429,11 +544,53 @@ pub const PATTERN_VARIATION_STRIDE: usize = 0x984;
 pub const PATTERN_VARIATIONS: usize = 10;
 /// `ptnVar00` accent header at the start of each variation (2× accent mask).
 pub const PATTERN_ACCENT_SIZE: usize = 4;
-/// Step-array slots per variation (`ptnVar01`…`ptnVar25`). The mapping of slot →
-/// instrument/voice is a higher-level concern; this crate exposes raw slots.
-pub const PATTERN_STEP_TRACKS: usize = 25;
+/// 64-byte array slots per variation (`ptnVar01`…`ptnVar25`). Only the first
+/// [`PATTERN_STEP_TRACKS`] hold step words — see [`track_role`].
+pub const PATTERN_ARRAY_SLOTS: usize = 25;
+/// Slots that hold [`StepWord`]s: `ptnVar01`…`ptnVar11` (INST01–INST11) plus
+/// `ptnVar12` (TRIG). Named from TR Editor's `editor_pattern_inst` panels.
+pub const PATTERN_STEP_TRACKS: usize = 12;
 /// Steps per track (`PTN00`…`PTN15`), each a 4-byte [`StepWord`].
 pub const PATTERN_STEPS_PER_TRACK: usize = 16;
+
+/// The 11 instrument tracks in `ptnVar01`…`ptnVar11`, in slot order. This is the
+/// **TR-8S** panel layout; a TR-6S stores its six voices in slots 0–5 and leaves
+/// 6–10 empty, so on a TR-6S backup slot 3/4/5 are its HC/CH/OH — use [`VOICES`]
+/// there. Verified on the reference backup: slots 6–10 are all zero and slot 4
+/// (the TR-6S closed hat) is by far the busiest track.
+pub const INST_TRACKS: [&str; 11] = [
+    "BD", "SD", "LT", "MT", "HT", "RS", "HC", "CH", "OH", "CC", "RC",
+];
+/// Slot index of the TRIG (trigger-out) track, `ptnVar12`.
+pub const PATTERN_TRIGGER_TRACK: usize = 11;
+
+/// What a `ptnVar` array slot (0-based, i.e. `ptnVar{n+1}`) actually holds.
+/// From TR Editor's `Script.xml` field names, corroborated by the reference
+/// backup: the motion slots for unused voices are zero and the step slots are
+/// the ones that read as musical patterns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackRole {
+    /// `ptnVar01`…`ptnVar11` — `INSTnn PTNnn` step words for instrument `0..11`.
+    Inst(usize),
+    /// `ptnVar12` — `TRIG PTNnn` step words (trigger out).
+    Trigger,
+    /// `ptnVar13`…`ptnVar23` — `INSTnn PRMnn`, per-step motion for instrument
+    /// `0..11`. Not step words.
+    Motion(usize),
+    /// `ptnVar24`/`ptnVar25` — `OTH0`/`OTH1 PRMnn` motion planes.
+    OtherMotion(usize),
+}
+
+/// The role of array slot `track` (0-based), or `None` past the last slot.
+pub fn track_role(track: usize) -> Option<TrackRole> {
+    Some(match track {
+        0..=10 => TrackRole::Inst(track),
+        11 => TrackRole::Trigger,
+        12..=22 => TrackRole::Motion(track - 12),
+        23 | 24 => TrackRole::OtherMotion(track - 23),
+        _ => return None,
+    })
+}
 
 /// A pattern record in the `PTN ` section. Header fields confirmed against TR
 /// Editor's `ptnCmn` schema + the backup manifest (name/tempo/kit all match).
@@ -469,11 +626,12 @@ impl Pattern {
         raw[self.offset + PATTERN_KIT_REF_OFFSET]
     }
 
-    /// Raw byte offset of one step word within the record. `variation` 0–9,
-    /// `track` 0–24, `step` 0–15. Low-level: no bounds beyond the asserts.
+    /// Raw byte offset of one 4-byte word within the record. `variation` 0–9,
+    /// `track` (array slot) 0–24, `step` 0–15. Low-level and role-agnostic: it
+    /// addresses motion slots as readily as step slots — see [`track_role`].
     pub fn step_word_offset(&self, variation: usize, track: usize, step: usize) -> usize {
         debug_assert!(variation < PATTERN_VARIATIONS);
-        debug_assert!(track < PATTERN_STEP_TRACKS);
+        debug_assert!(track < PATTERN_ARRAY_SLOTS);
         debug_assert!(step < PATTERN_STEPS_PER_TRACK);
         self.offset
             + PATTERN_VARIATION_0_OFFSET
@@ -484,7 +642,8 @@ impl Pattern {
     }
 
     /// The [`StepWord`] at (`variation`, `track`, `step`), or `None` if out of
-    /// range / past the record.
+    /// range / past the record. `track` must be a step slot (`< 12`); motion
+    /// slots are not step words and are rejected.
     pub fn step_word(
         &self,
         raw: &[u8],
@@ -529,6 +688,32 @@ impl Pattern {
             return false;
         }
         raw[o] = velocity;
+        true
+    }
+
+    /// Low-level write of a whole [`StepWord`]: velocity, sub step, alternate,
+    /// and whatever unknown bits the word carries. Read-modify-write via
+    /// [`Pattern::step_word`] and the `StepWord` setters to keep the bits this
+    /// crate does not understand intact. Returns false if out of range.
+    pub fn set_step_word(
+        &self,
+        raw: &mut [u8],
+        variation: usize,
+        track: usize,
+        step: usize,
+        word: StepWord,
+    ) -> bool {
+        if variation >= PATTERN_VARIATIONS
+            || track >= PATTERN_STEP_TRACKS
+            || step >= PATTERN_STEPS_PER_TRACK
+        {
+            return false;
+        }
+        let o = self.step_word_offset(variation, track, step);
+        if o + 4 > self.offset + PATTERN_RECORD_SIZE || o + 4 > raw.len() {
+            return false;
+        }
+        raw[o..o + 4].copy_from_slice(&word.raw);
         true
     }
 }
@@ -591,7 +776,7 @@ mod tests {
         v.extend_from_slice(&0u32.to_le_bytes());
         v.extend_from_slice(&5u32.to_le_bytes()); // version
         v.resize(HEADER_LEN, 0); // pad file header to 0x40
-        // chunk: "SYS " with 4-byte payload
+                                 // chunk: "SYS " with 4-byte payload
         let payload = [0xAAu8, 0xBB, 0xCC, 0xDD];
         v.extend_from_slice(b"SYS ");
         v.extend_from_slice(&0u32.to_le_bytes()); // reserved
@@ -689,9 +874,7 @@ mod tests {
         let tone_ids = [1u16, 5, 81, 17, 21, 22];
         // TONE table with enough entries to cover the max id (81) + names for
         // the ids we assert on.
-        let tone_names: Vec<String> = (0..=81u16)
-            .map(|i| format!("tone{i:03}"))
-            .collect();
+        let tone_names: Vec<String> = (0..=81u16).map(|i| format!("tone{i:03}")).collect();
 
         let mut v = Vec::new();
         v.extend_from_slice(b"TR6S");
@@ -742,7 +925,10 @@ mod tests {
         let (bytes, ids, names) = synthetic_with_kit_and_tones();
         let b = Backup::parse(bytes).unwrap();
         for &id in &ids {
-            assert_eq!(b.tone_name(id).as_deref(), Some(names[id as usize].as_str()));
+            assert_eq!(
+                b.tone_name(id).as_deref(),
+                Some(names[id as usize].as_str())
+            );
         }
     }
 
@@ -811,6 +997,80 @@ mod tests {
         };
         assert!(on.is_on());
         assert_eq!(on.velocity(), 80);
+    }
+
+    #[test]
+    fn step_word_sub_step_and_alternate() {
+        // Byte 1 low bits = sub step (hit count), bit 7 = ALTERNATE. These are
+        // the eight byte-1 values that occur on the reference backup.
+        let w = |b1| StepWord {
+            raw: [0x50, b1, 0, 0],
+        };
+        assert_eq!(w(0x00).sub_step(), None);
+        assert_eq!(w(0x01).sub_step(), Some(SubStep::Flam));
+        assert_eq!(w(0x02).sub_step(), Some(SubStep::Half));
+        assert_eq!(w(0x03).sub_step(), Some(SubStep::Third));
+        assert_eq!(w(0x04).sub_step(), Some(SubStep::Quarter));
+        for b1 in [0x00, 0x01, 0x02, 0x03, 0x04] {
+            assert!(!w(b1).is_alternate());
+        }
+        for b1 in [0x80, 0x81, 0x82] {
+            assert!(w(b1).is_alternate());
+        }
+        assert_eq!(w(0x82).sub_step(), Some(SubStep::Half));
+        assert_eq!(SubStep::Quarter.label(), "1/4");
+        assert_eq!(SubStep::Flam.to_raw(), 1);
+    }
+
+    #[test]
+    fn step_word_setters_preserve_unknown_bits() {
+        // Bits we have not decoded (byte 1 bits 3-6, bytes 2-3) must survive an
+        // edit — the librarian's losslessness contract, at step granularity.
+        let mut w = StepWord {
+            raw: [0x50, 0b0111_1000, 0xAB, 0xCD],
+        };
+        let unknown = w.unknown_bits();
+        w.set_velocity(100);
+        w.set_sub_step(Some(SubStep::Third));
+        w.set_alternate(true);
+        assert_eq!(w.velocity(), 100);
+        assert_eq!(w.sub_step(), Some(SubStep::Third));
+        assert!(w.is_alternate());
+        assert_eq!(w.unknown_bits(), unknown);
+
+        w.set_sub_step(None);
+        w.set_alternate(false);
+        assert_eq!(w.sub_step(), None);
+        assert!(!w.is_alternate());
+        assert_eq!(w.unknown_bits(), unknown);
+        assert_eq!(w.raw[1], 0b0111_1000);
+        assert_eq!(
+            StepWord {
+                raw: [0x50, 0, 0, 0]
+            }
+            .unknown_bits(),
+            0
+        );
+    }
+
+    #[test]
+    fn array_slot_roles() {
+        assert_eq!(track_role(0), Some(TrackRole::Inst(0)));
+        assert_eq!(track_role(10), Some(TrackRole::Inst(10)));
+        assert_eq!(track_role(PATTERN_TRIGGER_TRACK), Some(TrackRole::Trigger));
+        assert_eq!(track_role(12), Some(TrackRole::Motion(0)));
+        assert_eq!(track_role(22), Some(TrackRole::Motion(10)));
+        assert_eq!(track_role(23), Some(TrackRole::OtherMotion(0)));
+        assert_eq!(track_role(24), Some(TrackRole::OtherMotion(1)));
+        assert_eq!(track_role(PATTERN_ARRAY_SLOTS), None);
+        // The step slots are exactly the Inst + Trigger ones.
+        assert_eq!(PATTERN_STEP_TRACKS, INST_TRACKS.len() + 1);
+        // The variation stride is fully accounted for: accent + 25 arrays + the
+        // 832-byte ptnVar26 reserve block.
+        assert_eq!(
+            PATTERN_ACCENT_SIZE + PATTERN_ARRAY_SLOTS * PATTERN_STEPS_PER_TRACK * 4 + 832,
+            PATTERN_VARIATION_STRIDE
+        );
     }
 
     #[test]

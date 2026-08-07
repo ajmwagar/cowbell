@@ -202,7 +202,16 @@ The `int4x4` rule was the missing piece: TONE/TEMPO (≤12 bits) are 2 bytes, bu
 16-bit masks like `SHUFFLE SWITCH` are 3. Validated: **102/103 `ptnCmn` fields
 land in range** (the one miss is `MASTER PROBABILITY` reading 0, an off value
 below its 1–201 UI range — not a drift). Encoded as `schema_value_size()` in the
-crate.
+crate. Independently re-checked while decoding the step word: derived this way,
+`FLAM SPACING` (schema `+0x48` → record `+0x58`) reads its default `1` for 120 of
+128 patterns and its non-default values correlate with flam usage, which would
+not happen if the accumulated offset had drifted.
+
+**Known limit of the rule.** In `ptnVar00` the two `int4x4` accent masks
+(`0,65535`) occupy **2 bytes each**, not the 3 the rule gives — the accent header
+is 4 bytes, which the variation stride confirms exactly. So `int4x4` sizing is
+not uniform across structs; `ptnCmn` is empirically validated, `ptnVar00` is the
+counter-example. Treat the rule as validated per-struct, not universal.
 
 ### Pattern body structure
 
@@ -210,10 +219,9 @@ crate.
 lists them at addresses `01`–`0A`). Each variation holds per-instrument step
 arrays: `ptnVar01` = `INST01 PTN00…PTN15` — **16 steps as `int8x4` step words**.
 
-**Step word (4 bytes):** byte 0 = **velocity** (0 = step off, e.g. `0x50`=80 on);
-higher bytes carry sub-step/flam/probability (not decoded yet). Verified:
-variation A INST01 of "Speak C0DE" reads `. X . X X X . X …` at record `+0xA0` —
-a real drum pattern. Exposed as `StepWord` in the crate.
+**Step word (4 bytes) — DECODED.** See [the step word](#the-step-word-4-bytes--decoded)
+below. Verified: variation A INST01 of "Speak C0DE" reads `. X . X X X . X …` at
+record `+0xA0` — a real drum pattern. Exposed as `StepWord` in the crate.
 
 **Stride — NAILED (empirically verified).** Variation 0 (A) begins at record
 `+0xA0`; consecutive variations are a steady **`0x984` (2436 bytes)** apart
@@ -229,9 +237,84 @@ Verified against the backup — reading this formula yields real beats (variatio
 track 0 of "Speak C0DE": `X.XXX.X.`). Exposed low-level in the crate as
 `Pattern::step_word()` + the `PATTERN_*` stride constants.
 
-Note: the 25 step-array slots ≥ the 6 audible voices (the engine has more inst
-tracks + planes); mapping slot → instrument is a **higher-level** concern, not
-this crate's. FX (`FX  `) and SYS decode the same way from `Script.xml`.
+### The 25 array slots — SOLVED
+
+`Script.xml` names every field of `ptnVar01`…`ptnVar26`, and the reference
+backup corroborates the split exactly (the motion slots of unused voices are
+zero; the step slots are the ones that read as music):
+
+| Slot (0-based) | Schema | Holds |
+| -------------- | ------ | ----- |
+| — | `ptnVar00` | accent masks (4 B: `ACCENT PTN`, `ACCENT PTN_WEAK`) |
+| `0`–`10` | `ptnVar01`–`ptnVar11` | **step words**, `INST01`–`INST11 PTNnn` |
+| `11` | `ptnVar12` | **step words**, `TRIG PTNnn` (trigger out) |
+| `12`–`22` | `ptnVar13`–`ptnVar23` | per-step **motion**, `INST01`–`INST11 PRMnn` |
+| `23`–`24` | `ptnVar24`–`ptnVar25` | motion planes `OTH0`/`OTH1 PRMnn` |
+| — | `ptnVar26` | 832 B of `RESERVE00`… (208 × `int8x4`) |
+
+So `4 + 25×64 + 832 = 2436 = 0x984` is fully accounted for. Note the tail is
+**reserve, not motion** — motion lives in slots 12–24 (this corrects the earlier
+"motion(832)" reading of `ptnVar26`).
+
+The 11 instrument tracks are the **TR-8S** panel layout, from TR Editor's
+`editor_pattern_inst` panels: `BD SD LT MT HT RS HC CH OH CC RC`. A **TR-6S**
+stores its six voices in slots 0–5 and leaves 6–10 empty, so on a TR-6S backup
+slots 3/4/5 are its **HC/CH/OH**, not MT/HT/RS. Confirmed on the reference
+backup: slots 6–10 are all zero, slot 11 (TRIG) is on at velocity 80 for all
+20,480 steps, and slot 4 — the TR-6S closed hat — is by far the busiest track.
+Exposed as `track_role()` / `TrackRole` / `INST_TRACKS` in the crate.
+
+### The step word (4 bytes) — DECODED
+
+| Byte | Bits | Field |
+| ---- | ---- | ----- |
+| `0` | 0–7 | **velocity**, 1–127 (`0` = step off; `80` = the default) |
+| `1` | 0–2 | **sub step** — `0` none, `1` FLAM, `2` `1/2`, `3` `1/3`, `4` `1/4` |
+| `1` | 3–6 | unknown (always 0 here) |
+| `1` | 7 | **ALTERNATE** flag |
+| `2`–`3` | — | unknown (always 0 here) |
+
+Across all 512,000 step words in the backup, the six TR-6S voice tracks use
+exactly **eight** byte-1 values — `00 01 02 03 04 80 81 82` — and bytes 2–3 are
+zero in every one of the 16,987 on-steps. So the low field is `0..4` and bit 7 is
+an independent flag.
+
+**Why the low field is a hit count, not the combo index.** TR Editor's
+`subStep` string table is `1/2,1/3,1/4,FLAM` (index 0–3), which would put FLAM at
+`4`. It's the other way round — the device stores the **number of hits**, with
+FLAM as the `1` special case. Evidence:
+
+- `ptnCmn` has a per-pattern **`FLAM SPACING`** (range 0–8, default 1). Only 8 of
+  the 128 patterns set it away from the default — and 3 of those 8 use low value
+  `1`, versus 4 of the other 120 (a ~11× enrichment, hypergeometric *p* ≈ 7e-4).
+  Values `2`/`3`/`4` show no enrichment at all (1/8, 0/8, 0/8).
+- Low value `1` lands on the **low tom** 31 times out of 34 — tom flams.
+- Value `2` is the most common by 6× (652 uses), is hat-heavy (331 on CH), and is
+  the only value that runs for a whole bar (10 runs of 16) — a `1/2` double is
+  the one subdivision you can use pervasively. Values `3`/`4` never run past 3
+  steps and skew to the last quarter of the bar (38–40%), i.e. fills.
+
+Reading it back confirms the musical sense: `707_Variation` variation D shows
+`LT |.... .F.. F...|` (707 tom flams, and this is one of the non-default
+`FLAM SPACING` patterns), and `Footwerk` shows `LT |X.X. X.X. X.X. X.22|` — a
+juke tom line ending in doubles.
+
+**Bit 7 = ALTERNATE.** TR Editor's step editor exposes exactly four per-step
+attributes — velocity, probability, sub step, alternate — so one boolean is
+unaccounted for, and bit 7 is the only boolean left. It concentrates in the
+percussion-pair presets: `727_&_909` and `727_Variation_1/2` account for 572 of
+the 754 alternate steps, and in `727_&_909` the whole 16-step HC row is flagged —
+exactly the high/low conga-bongo alternation a 727 kit is for.
+
+**Probability is not in this data.** Per-step probability (`0`–`10`, displayed
+`---,90,…,0`) reads 0 for every step of every factory pattern, as does
+`ptnCmn.MASTER PROBABILITY`, so its bit position is **unconfirmed** — it is
+presumably one of the zero bits (byte 1 bits 3–6, or bytes 2–3) and looks like a
+later-firmware feature. `StepWord`'s setters preserve every undecoded bit, and
+`StepWord::unknown_bits()` reports them, so an edit can never silently drop
+per-step data this crate doesn't understand yet.
+
+FX (`FX  `) and SYS decode the same way from `Script.xml`.
 
 ## The `+0x08` field — NOT a per-record checksum (2026-08-07)
 
@@ -281,9 +364,12 @@ Next (record internals — the RE that turns bytes into editable fields):
    map them into the 144-byte tone table (~`0x326FD4`); then per-voice params
    (level/pan/tune/decay/…) via controlled one-change diffs. Also identify the
    `+0x08` per-record checksum so kits can be *written* back safely.
-2. **Pattern record (24,504 B)** — steps/tracks/motion. Use the "save two
-   patterns differing by one step/param, then diff" technique — `fw-analyze
-   diff --block`/byte-diff pinpoints the changed field.
+2. **Pattern motion (slots 12–24)** — the step words and the slot map are done;
+   the `INSTnn PRMnn` / `OTH0-1` motion planes are not. Also still open on the
+   step word: which zero bits hold **per-step probability** (no factory pattern
+   sets it). Both want the "save two patterns differing by one step/param, then
+   diff" technique — `fw-analyze diff --block`/byte-diff pinpoints the changed
+   field.
 3. **`SYS ` ↔ `init_param`** — reconcile the shared system-param body with the
    already-mapped `init_param` structure (`docs/firmware-format.md`).
 4. **`FX  `** and the file-header checksum (`0x20` region).
