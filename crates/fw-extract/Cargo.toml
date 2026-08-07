@@ -15,3 +15,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+tar = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
