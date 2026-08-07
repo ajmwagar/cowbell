@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "cowbell",
+  "project_id": "cbb5b155-4168-47ad-bfc2-19eb4a294f27"
+}

@@ -43,3 +43,24 @@ dumps/
 # Local extraction scratch directories produced by `fw-extract unpack`.
 extracted/
 **/extracted/
+
+# Vendor update archives are tar, not *.bin — name the container extensions too
+# so an unpacked-in-place updater cannot slip past the *.bin rule above.
+*.tar
+*.tgz
+*.tar.gz
+*.exe
+*.dmg
+
+# Ghidra project directories. These embed decompiled proprietary code in
+# .rep/ databases, so they are as sensitive as the images themselves.
+*_ghidra/
+*.gpr
+*.rep/
+*.lock
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
