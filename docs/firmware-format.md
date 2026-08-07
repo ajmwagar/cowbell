@@ -147,20 +147,24 @@ Practical implications:
 3. Any plaintext obtained for one unit (e.g. a future NOR dump) is a
    **known-plaintext oracle** for the shared blocks of the other.
 
-**What this does and does NOT establish about the SoC.** It proves TR-6S and
-TR-8S share a firmware *platform* (key, container, CRC-32, load map
-`0x60000000`, `init_param`@`0x0033FFD0`, and substantial shared content). That
-makes a **shared main SoC highly likely** — Roland would not reuse one
-encryption key + bootloader scheme + memory map across two different
-architectures. Caveat for rigor: ECB block-sharing alone can't separate shared
-*code* from shared ISA-independent *data* (sample/wavetable ROM), so firmware
-comparison **strongly implies** but does not by itself *prove* the two share an
-ISA. Naming that SoC "E4E" rests on the T-8 photo + identical conventions;
-literal confirmation for the TR boards needs a board photo or a NOR dump.
+**What this establishes about the SoC — the main chip is BMC.** The shared
+platform (key, container, CRC-32, load map `0x60000000`,
+`init_param`@`0x0033FFD0`, substantial shared content) means TR-6S and TR-8S
+almost certainly run the **same main SoC**. A YouTube teardown of the TR-8S
+shows that SoC directly: **`Roland BMC`** (lot 5100440716). Because it is the
+*key-sharing* sibling, this pins the **TR-6S main chip to BMC** — a stronger
+chain than the earlier E4E lead (which came from the different-key T-8). Caveat
+for rigor: ECB block-sharing alone can't separate shared *code* from shared
+ISA-independent *data*, and we have no first-party TR-6S photo — but the
+key-sharing + TR-8S BMC photo make BMC the well-supported answer. See
+`hardware.md`.
 
 The **T-8 (`DD010`) `App_Main` uses a DIFFERENT key** — 0 shared blocks with
-either TR box, and 0% ECB duplication. So the AIRA Compact line is *not* a key
-shortcut; it is an ISA/toolchain reference only (see below).
+either TR box, and 0% ECB duplication. This is now explained: the T-8 main SoC
+is **E4E** (Beat 8 photo), a *different chip* from the TR boxes' BMC, hence a
+different bootloader/key. So the AIRA Compact line is neither a key shortcut nor
+representative of the TR-6S silicon — it is a separate part, useful only as a
+generic ARM/toolchain reference (see below).
 
 ### T-8 `App_Panel` — PLAINTEXT ARM Cortex-M (the ISA is confirmed)
 
@@ -178,8 +182,9 @@ firmware and it is textbook **ARM Cortex-M**:
 
 This **confirms the ARM ISA** for the Roland panel MCU directly from firmware
 (no longer just an inference from the chip photo or the `0x60000000` address).
-It does *not* prove the E4E audio SoC is ARM — that image is still encrypted —
-but it strengthens the working hypothesis that the whole platform is ARM-based.
+It does *not* prove the audio SoCs (BMC on the TRs, E4E on the T-8) are ARM —
+those images are still encrypted — but it shows Roland uses ARM on these
+platforms and strengthens the working hypothesis that the audio SoCs are ARM too.
 
 Carved image: `firmwares/t8_sys_v102/extracted/DD010_pnl_ARM.bin` (gitignored).
 

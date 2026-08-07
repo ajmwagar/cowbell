@@ -7,29 +7,25 @@ the reasoning trail survives.
 
 ## Compute chip
 
-- [ ] **Exact part number** of the main compute chip. Is `ESC2` the real
-      silicon, or a Roland label over a third-party SoC?
 - [x] ~~**ESC2 vs BMC vs E4E** — which is a discrete part vs. a marketing
-      name?~~ → **E4E is a confirmed discrete Roland SoC** (BGA, marked
-      `Roland E4E`, lot 5100069694, date 2304), seen on an AIRA Compact Beat 8.
-      Whether the *TR-6S* main chip is E4E or ESC2 still needs a direct read of
-      the TR-6S board. See `hardware.md`.
-- [ ] **ISA / architecture of the E4E audio SoC** — ARM (Cortex-A/-M/-R?), a
-      Tensilica/Xtensa DSP, SuperH legacy, or custom? *Leading hypothesis: ARM,*
-      but still unconfirmed because the `App_Main`/`App1_Main` audio images are
-      encrypted. Evidence: (a) load address `0x60000000` = canonical ARM
-      external-NOR base — and this address is now tied directly to **confirmed
-      E4E silicon**: the T-8 (whose main SoC is a photographed `Roland E4E`)
-      loads its `App_Main` at `0x60000000`, identical to both TR boxes; (b) the
-      panel MCU is now **confirmed ARM** (below).
-- [ ] **Is the TR-6S main SoC actually an E4E?** Still unconfirmed — E4E is
-      confirmed only on the T-8. But TR-6S and TR-8S share 66k code/ROM blocks
-      (same DSP engine → same main-SoC ISA as each other), and all three
-      products load `App_Main` at `0x60000000`. Consistent with a shared E4E
-      family across the line; needs a direct read of the TR-6S board to close.
-      NOTE: because the T-8 uses a *different key*, ciphertext comparison
-      **cannot** tell us whether the T-8 runs the same E4E code as the TRs —
-      only decryption can.
+      name?~~ → **Two confirmed discrete Roland SoCs: BMC and E4E.** BMC is the
+      big-TR-box chip (`Roland BMC`, lot 5100440716, TR-8S teardown); E4E is the
+      AIRA Compact chip (`Roland E4E`, lot 5100069694, Beat 8). BMC is NOT just
+      ACB marketing. ESC2 unobserved in any photo we hold. See `hardware.md`.
+- [x] ~~**Is the TR-6S main SoC E4E?**~~ → **No — almost certainly BMC.** The
+      key-sharing sibling TR-8S is photographed as `Roland BMC`, and TR-6S↔TR-8S
+      share the key (16 KB identical ciphertext run), load map, and 66k blocks →
+      same main SoC. Strong inference via the *key-sharing* sibling. A first-party
+      TR-6S board photo would make it airtight; still outstanding.
+- [ ] **ISA / architecture of the BMC audio SoC** (TR-6S/TR-8S) — ARM
+      (Cortex-A/-M/-R?), Tensilica/Xtensa DSP, SuperH, or custom? *Leading
+      hypothesis: ARM,* unconfirmed because `App1_Main` is encrypted. Evidence:
+      (a) load address `0x60000000` = canonical ARM external-NOR base (shared by
+      BMC and E4E images alike — a Roland-wide convention); (b) the panel MCU is
+      confirmed ARM (below). BMC and E4E are distinct chips, so their ISAs are
+      not guaranteed identical — but both use the same memory-map convention.
+      NOTE: T-8 (E4E) uses a *different key*, so ciphertext comparison cannot
+      relate BMC and E4E code; only decryption can.
 - [x] ~~**ISA of the panel/IO MCU**~~ → **ARM Cortex-M, confirmed from
       firmware.** The T-8 `App_Panel` image is plaintext, decodes as a valid
       Cortex-M vector table + Thumb code at base `0x08000000` (196 functions in

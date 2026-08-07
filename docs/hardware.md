@@ -9,19 +9,63 @@ first-party inspection; treat every line as "best current understanding" until
 corroborated. Getting a clear photo of the **TR-6S main SoC** is an open task —
 it would confirm whether the TR-6S main chip is the same E4E seen on the Beat 8.
 
-## Compute / main SoC — OPEN
+## Compute / main SoC — TR-6S almost certainly BMC
 
-The identity of the main compute chip is the central open question. Candidates
-seen referenced across Roland's post-AIRA generation:
+Two distinct, confirmed Roland custom SoCs now anchor this. The **big TR boxes
+use BMC**; the **AIRA Compact line uses E4E**:
 
-| Label seen | Notes |
-| ---------- | ----- |
-| **ESC2**   | Roland-branded custom ("Engine Sound Chip"?) part used in several AIRA / boutique units. Was the leading candidate for the TR-6S main chip. |
-| **BMC**    | "Behavior Modeling Core" branding — appears in ACB marketing; may be a marketing name for a DSP block rather than a discrete part. |
-| **E4E**    | **CONFIRMED real, discrete Roland silicon** — see below. |
+| Label | Status | Where seen |
+| ----- | ------ | ---------- |
+| **BMC** | **CONFIRMED real, discrete Roland silicon.** The TR-6S main SoC — its key-sharing sibling the TR-8S is BMC — so **TR-6S ≈ BMC** (strong inference, see below). | TR-8S main board (YouTube teardown) |
+| **E4E** | **CONFIRMED real, discrete Roland silicon.** A *different* part; the AIRA Compact / Beat 8 SoC. Explains why the T-8 firmware uses a different key. | Beat 8 main board (Reddit) |
+| **ESC2** | Referenced online for AIRA/boutique units; not observed in any photo we hold. Likely a different/earlier part or another product line. | — (unconfirmed) |
+
+Both carry Roland's `5100xxxxxx` lot scheme (BMC `5100440716`, E4E `5100069694`)
+— sibling custom parts, same foundry generation, distinct designs.
+
+Correction to earlier notes: BMC is **not** merely ACB marketing ("Behavior
+Modeling Core") — it is a real BGA part. And the TR-6S is **not** E4E (that is
+the Compact-line chip); the E4E lead came from a different-key cousin and was
+superseded by the direct TR-8S BMC photo.
 
 Key unknowns tracked in `architecture-questions.md`: actual silicon vendor,
-ISA, clock, and whether it is a single SoC or a main CPU + DSP coprocessor.
+ISA, clock, and whether each is a single SoC or a main CPU + DSP coprocessor.
+
+### BMC — confirmed discrete Roland SoC; the TR-family main chip (2026-08-07)
+
+Confirmed from a **third-party YouTube teardown of a Roland TR-8S** (not the
+maintainer's hardware):
+
+- Marking: `Roland` / **`BMC`**, large BGA package.
+- Lot/part: `5100440716`.
+- Adjacent RAM: an **ISSI** SDRAM (note: the TR-6S is reported with ESMT SDRAM —
+  vendor differs by product, unsurprising).
+
+**Why this pins the TR-6S to BMC.** The TR-6S and TR-8S `App1_Main` images share
+one encryption key (proven: a 15,936-byte identical ciphertext run at a fixed
+offset — see `firmware-format.md`), the same load map (`0x60000000`), the same
+container/CRC scheme, and 66k shared blocks. Roland ties that key + bootloader +
+memory map to a hardware platform, so the two boxes almost certainly run the
+**same main SoC** — and the TR-8S one is directly photographed as BMC. This is a
+**stronger** chain than the E4E lead was: it runs through the *key-sharing*
+sibling, not a different-key cousin. Still not first-party; a TR-6S board photo
+would make it airtight.
+
+### E4E — confirmed discrete Roland SoC (AIRA Compact line), 2026-08-07
+
+Confirmed from **third-party teardown photos (Reddit)** of a **Roland AIRA
+Compact "Beat 8"** (T-8-class) board — a sibling product, *not* the TR-6S, and
+**not the maintainer's own hardware.** Treat as external corroboration, not a
+first-party observation:
+
+- Marking: `Roland` / **`E4E`**, BGA package, `Roland MADE IN CHINA`.
+- Lot/part: `5100069694`, date code `2304` (2023, wk ~04).
+
+E4E is a real, discrete Roland SoC — but a **different part from the BMC** in the
+TR boxes. This is consistent with (and explains) the T-8 firmware using a
+different encryption key than the TR-6S/TR-8S. The Beat 8 remains a candidate
+E4E reference platform, but is **not** representative of the TR-6S main chip and
+**not on hand.** See `architecture-questions.md` next-steps.
 
 ### E4E — confirmed discrete Roland SoC (2026-08-07)
 
