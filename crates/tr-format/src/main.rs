@@ -33,6 +33,14 @@ enum Command {
         /// A TR backup file.
         backup: PathBuf,
     },
+    /// List the kit slots (index + name) in the backup.
+    Kits {
+        /// A TR backup file.
+        backup: PathBuf,
+        /// Include empty (unnamed) slots.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -40,7 +48,25 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Info { backup } => info(&backup),
         Command::Verify { backup } => verify(&backup),
+        Command::Kits { backup, all } => kits(&backup, all),
     }
+}
+
+fn kits(path: &std::path::Path, all: bool) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let b = Backup::parse(bytes)?;
+    let raw = b.raw();
+    let mut shown = 0;
+    for k in b.kits() {
+        let name = k.name(raw);
+        if name.is_empty() && !all {
+            continue;
+        }
+        println!("  {:>3}  {}", k.index + 1, name);
+        shown += 1;
+    }
+    println!("{} kit slot(s)", shown);
+    Ok(())
 }
 
 fn info(path: &std::path::Path) -> Result<()> {

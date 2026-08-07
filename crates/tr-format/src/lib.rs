@@ -179,6 +179,61 @@ impl Backup {
     }
 }
 
+/// Size of one `KIT ` record (bytes). Verified: 128 records of `0x520` fill the
+/// KIT section payload exactly on a v1.51 TR-6S backup.
+pub const KIT_RECORD_SIZE: usize = 0x520;
+/// Offset of the 16-char kit name within a kit record.
+pub const KIT_NAME_OFFSET: usize = 0x10;
+/// Length of the kit-name field.
+pub const KIT_NAME_LEN: usize = 16;
+
+/// A kit record located within the `KIT ` section. A lightweight view — call
+/// [`Kit::name`] / [`Kit::bytes`] with the owning [`Backup`]'s `raw()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Kit {
+    /// 0-based slot index within the KIT section.
+    pub index: usize,
+    /// Byte offset of the record within the file.
+    pub offset: usize,
+}
+
+impl Kit {
+    /// The record's bytes (`KIT_RECORD_SIZE` long).
+    pub fn bytes<'a>(&self, raw: &'a [u8]) -> &'a [u8] {
+        &raw[self.offset..self.offset + KIT_RECORD_SIZE]
+    }
+
+    /// The kit name (`+0x10`, 16 bytes, trailing spaces/NULs trimmed).
+    pub fn name(&self, raw: &[u8]) -> String {
+        let s = self.offset + KIT_NAME_OFFSET;
+        String::from_utf8_lossy(&raw[s..s + KIT_NAME_LEN])
+            .trim_end_matches([' ', '\0'])
+            .to_string()
+    }
+}
+
+impl Backup {
+    /// The kit records in the `KIT ` section (128 on a full TR-6S backup), or an
+    /// empty vec if there is no KIT section.
+    ///
+    /// NOTE: only the record framing and name are decoded so far. The per-record
+    /// header (`+0x00`, includes an as-yet-unidentified checksum) and the
+    /// per-voice params (6 voices: BD/SD/LT/HC/CH/OH, referencing a separate
+    /// tone table) are not decoded yet — see `docs/tr-format.md`.
+    pub fn kits(&self) -> Vec<Kit> {
+        let Some(sec) = self.find("KIT") else {
+            return Vec::new();
+        };
+        let n = sec.payload_len / KIT_RECORD_SIZE;
+        (0..n)
+            .map(|i| Kit {
+                index: i,
+                offset: sec.payload_offset + i * KIT_RECORD_SIZE,
+            })
+            .collect()
+    }
+}
+
 /// Scan for container chunks: 4-byte-aligned offsets whose tag is known and
 /// whose reserved u32 (header+4) is zero. Best-effort directory; the retained
 /// bytes remain the source of truth for round-trip.
@@ -271,6 +326,46 @@ mod tests {
         let b = Backup::parse(synthetic()).unwrap();
         let kit = b.find("KIT").unwrap();
         assert_eq!(kit.array_shape(b.raw()), Some((2, 3)));
+    }
+
+    /// A backup with a real-sized KIT section: 2 records of KIT_RECORD_SIZE,
+    /// names at +0x10. No Roland bytes.
+    fn synthetic_with_kits(names: &[&str]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"TR6S");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&5u32.to_le_bytes());
+        v.resize(HEADER_LEN, 0);
+        // KIT chunk header
+        v.extend_from_slice(b"KIT ");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        let payload_len = names.len() * KIT_RECORD_SIZE;
+        v.extend_from_slice(&(payload_len as u32).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        for name in names {
+            let mut rec = vec![0u8; KIT_RECORD_SIZE];
+            let nb = name.as_bytes();
+            let n = nb.len().min(KIT_NAME_LEN);
+            rec[KIT_NAME_OFFSET..KIT_NAME_OFFSET + n].copy_from_slice(&nb[..n]);
+            for b in &mut rec[KIT_NAME_OFFSET + n..KIT_NAME_OFFSET + KIT_NAME_LEN] {
+                *b = b' ';
+            }
+            v.extend_from_slice(&rec);
+        }
+        v
+    }
+
+    #[test]
+    fn kits_parse_names() {
+        let bytes = synthetic_with_kits(&["TR-808_Kit", "My Kit"]);
+        let b = Backup::parse(bytes.clone()).unwrap();
+        let kits = b.kits();
+        assert_eq!(kits.len(), 2);
+        assert_eq!(kits[0].name(b.raw()), "TR-808_Kit");
+        assert_eq!(kits[1].name(b.raw()), "My Kit");
+        assert_eq!(kits[0].bytes(b.raw()).len(), KIT_RECORD_SIZE);
+        // still lossless
+        assert_eq!(b.to_bytes(), bytes);
     }
 
     #[test]

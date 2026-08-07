@@ -60,6 +60,28 @@ Observed on the reference backup:
 Array sections self-describe with a `count,record_size` preamble, so the parser
 locates records generically.
 
+## Kit record (`KIT ` section)
+
+128 records of **`0x520` (1,312) bytes**, back-to-back (no preamble; `128 ×
+0x520` fills the payload exactly). Verified by extracting all 128 names and
+matching the manifest.
+
+| Offset | Len | Field | Status |
+| ------ | --- | ----- | ------ |
+| `+0x00` | 16 | per-record header — flags + a checksum-like field (`+0x08`, 8 B) | **partial** — the `+0x08` field is not a plain CRC-32 of the body; treat as an opaque per-record hash. Matters only when *writing* a kit back. |
+| `+0x10` | 16 | **kit name** (ASCII, space/NUL-padded) | **done** |
+| `+0x20` | 0x500 | kit params + 6 voice configs (BD/SD/LT/HC/CH/OH) | **TODO** |
+
+The voices reference tones by **ID**, not by name: the tone/instrument names
+live in a separate table just past the KIT section (~`0x326FD4`) with **144-byte
+(`0x90`) entries**, name at the entry start. So decoding a voice = (a) find the
+6 tone-ID fields in the kit record, (b) map them into that 144-byte table.
+
+Reversing the per-voice params: save two kits differing by exactly one voice
+parameter and diff them (`fw-analyze diff --block`) to pin each field. Record 0
+vs record 1 differ in ~121 scattered bytes (name + all params), so a controlled
+one-change diff is the way to isolate individual fields.
+
 ## Losslessness contract
 
 The [`tr-format`] crate retains the original bytes and returns them unchanged
@@ -72,13 +94,15 @@ corrupt unknown/reserved bytes.
 ## Status & next steps
 
 Done (v0 crate): container magic/version, section directory, array shapes,
-byte-exact round-trip, length-preserving section edits.
+byte-exact round-trip, length-preserving section edits, **kit record framing +
+name** (`tr-format kits` lists all 128, verified against the manifest).
 
 Next (record internals — the RE that turns bytes into editable fields):
 
-1. **Kit record (1,312 B)** — decode the 6-voice layout (tone select + params
-   per BD/SD/LT/HC/CH/OH) using the manifest tone names as anchors. Smallest
-   record; best first target.
+1. **Kit voices (6 × in the 0x500 param area)** — find the 6 tone-ID fields and
+   map them into the 144-byte tone table (~`0x326FD4`); then per-voice params
+   (level/pan/tune/decay/…) via controlled one-change diffs. Also identify the
+   `+0x08` per-record checksum so kits can be *written* back safely.
 2. **Pattern record (24,504 B)** — steps/tracks/motion. Use the "save two
    patterns differing by one step/param, then diff" technique — `fw-analyze
    diff --block`/byte-diff pinpoints the changed field.
