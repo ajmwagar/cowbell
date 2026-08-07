@@ -19,3 +19,27 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Cargo.lock policy: this is a binary-producing workspace, so Cargo.lock IS
+# committed (reproducible builds of the CLIs). Do NOT ignore it — it is tracked
+# on purpose. This comment is here so the choice is explicit.
+
+# --- Proprietary firmware must NEVER be committed --------------------------
+# Roland firmware images, ROM/sample data, and anything carved out of an
+# installer are copyrighted and stay strictly local. Keep working images under
+# firmware/ or dumps/ (any depth) and git will refuse to track them.
+firmware/
+dumps/
+**/firmware/
+**/dumps/
+
+# Common raw-image / dump extensions, wherever they land.
+*.bin
+*.rom
+*.img
+*.dump
+*.svd
+
+# Local extraction scratch directories produced by `fw-extract unpack`.
+extracted/
+**/extracted/
