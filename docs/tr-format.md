@@ -215,11 +215,23 @@ higher bytes carry sub-step/flam/probability (not decoded yet). Verified:
 variation A INST01 of "Speak C0DE" reads `. X . X X X . X …` at record `+0xA0` —
 a real drum pattern. Exposed as `StepWord` in the crate.
 
-**Remaining for the pattern builder:** the exact per-variation / per-instrument
-stride (the 10 variations × the `ptnVar*` sub-structs, incl. motion in
-`ptnVar26`) — the model is solved, so this is now transcription. Then a step
-grid read/write API, and pattern construction. FX (`FX  `) and SYS decode the
-same way from `Script.xml`.
+**Stride — NAILED (empirically verified).** Variation 0 (A) begins at record
+`+0xA0`; consecutive variations are a steady **`0x984` (2436 bytes)** apart
+(A–H boundaries confirmed by locating each variation's step cluster). Per
+variation: `ptnVar00` accent (4 B) + 25 step-arrays (`ptnVar01…25`, 64 B each =
+16 steps × 4-B word) + motion (`ptnVar26`, 832 B) = 2436. So:
+
+```
+step_word_offset = 0xA0 + variation*0x984 + 4 + track*64 + step*4
+```
+
+Verified against the backup — reading this formula yields real beats (variation A
+track 0 of "Speak C0DE": `X.XXX.X.`). Exposed low-level in the crate as
+`Pattern::step_word()` + the `PATTERN_*` stride constants.
+
+Note: the 25 step-array slots ≥ the 6 audible voices (the engine has more inst
+tracks + planes); mapping slot → instrument is a **higher-level** concern, not
+this crate's. FX (`FX  `) and SYS decode the same way from `Script.xml`.
 
 ## Losslessness contract
 

@@ -406,6 +406,22 @@ pub const PATTERN_TEMPO_OFFSET: usize = 0x20;
 /// Offset of KIT REFFERENCE (`u8`, 1–128) — which kit the pattern plays.
 pub const PATTERN_KIT_REF_OFFSET: usize = 0x22;
 
+// --- Pattern body stride (empirically nailed on the v1.51 backup) ------------
+/// Record offset where variation 0 (A) begins (right after `ptnCmn`).
+pub const PATTERN_VARIATION_0_OFFSET: usize = 0xA0;
+/// Bytes between consecutive variations (`ptnVar`): accent(4) + 25 step-arrays
+/// (25×64) + motion(832) = 2436. Verified: A–H boundaries are a steady 0x984.
+pub const PATTERN_VARIATION_STRIDE: usize = 0x984;
+/// Variations per pattern: A–H + 2 fills.
+pub const PATTERN_VARIATIONS: usize = 10;
+/// `ptnVar00` accent header at the start of each variation (2× accent mask).
+pub const PATTERN_ACCENT_SIZE: usize = 4;
+/// Step-array slots per variation (`ptnVar01`…`ptnVar25`). The mapping of slot →
+/// instrument/voice is a higher-level concern; this crate exposes raw slots.
+pub const PATTERN_STEP_TRACKS: usize = 25;
+/// Steps per track (`PTN00`…`PTN15`), each a 4-byte [`StepWord`].
+pub const PATTERN_STEPS_PER_TRACK: usize = 16;
+
 /// A pattern record in the `PTN ` section. Header fields confirmed against TR
 /// Editor's `ptnCmn` schema + the backup manifest (name/tempo/kit all match).
 ///
@@ -438,6 +454,45 @@ impl Pattern {
     /// The kit slot (1–128) this pattern references.
     pub fn kit_ref(&self, raw: &[u8]) -> u8 {
         raw[self.offset + PATTERN_KIT_REF_OFFSET]
+    }
+
+    /// Raw byte offset of one step word within the record. `variation` 0–9,
+    /// `track` 0–24, `step` 0–15. Low-level: no bounds beyond the asserts.
+    pub fn step_word_offset(&self, variation: usize, track: usize, step: usize) -> usize {
+        debug_assert!(variation < PATTERN_VARIATIONS);
+        debug_assert!(track < PATTERN_STEP_TRACKS);
+        debug_assert!(step < PATTERN_STEPS_PER_TRACK);
+        self.offset
+            + PATTERN_VARIATION_0_OFFSET
+            + variation * PATTERN_VARIATION_STRIDE
+            + PATTERN_ACCENT_SIZE
+            + track * (PATTERN_STEPS_PER_TRACK * 4)
+            + step * 4
+    }
+
+    /// The [`StepWord`] at (`variation`, `track`, `step`), or `None` if out of
+    /// range / past the record.
+    pub fn step_word(
+        &self,
+        raw: &[u8],
+        variation: usize,
+        track: usize,
+        step: usize,
+    ) -> Option<StepWord> {
+        if variation >= PATTERN_VARIATIONS
+            || track >= PATTERN_STEP_TRACKS
+            || step >= PATTERN_STEPS_PER_TRACK
+        {
+            return None;
+        }
+        let o = self.step_word_offset(variation, track, step);
+        let end = o + 4;
+        if end > self.offset + PATTERN_RECORD_SIZE || end > raw.len() {
+            return None;
+        }
+        Some(StepWord {
+            raw: [raw[o], raw[o + 1], raw[o + 2], raw[o + 3]],
+        })
     }
 }
 
@@ -745,6 +800,37 @@ mod tests {
         assert_eq!(ptns[0].name(b.raw()), "Speak C0DE");
         assert_eq!(ptns[0].tempo_bpm(b.raw()), 144.0);
         assert_eq!(ptns[0].kit_ref(b.raw()), 14);
+    }
+
+    #[test]
+    fn step_word_offset_and_read() {
+        // Build a PTN record with a known step at (var 0, track 0, step 2).
+        let mut v = Vec::new();
+        v.extend_from_slice(b"TR6S");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&5u32.to_le_bytes());
+        v.resize(HEADER_LEN, 0);
+        v.extend_from_slice(b"PTN ");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&(PATTERN_RECORD_SIZE as u32).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        let mut rec = vec![0u8; PATTERN_RECORD_SIZE];
+        // var0 track0 step2 => 0xA0 + 4 + 0 + 2*4 = 0xAC (velocity 90)
+        rec[0xA0 + 4 + 2 * 4] = 90;
+        v.extend_from_slice(&rec);
+
+        let b = Backup::parse(v).unwrap();
+        let p = b.patterns()[0];
+        assert_eq!(p.step_word_offset(0, 0, 2), p.offset + 0xAC);
+        assert!(p.step_word(b.raw(), 0, 0, 2).unwrap().is_on());
+        assert_eq!(p.step_word(b.raw(), 0, 0, 2).unwrap().velocity(), 90);
+        assert!(!p.step_word(b.raw(), 0, 0, 3).unwrap().is_on());
+        // variation 1 lands one stride later
+        assert_eq!(
+            p.step_word_offset(1, 0, 0),
+            p.offset + 0xA0 + PATTERN_VARIATION_STRIDE + 4
+        );
+        assert_eq!(p.step_word(b.raw(), PATTERN_VARIATIONS, 0, 0), None);
     }
 
     #[test]
