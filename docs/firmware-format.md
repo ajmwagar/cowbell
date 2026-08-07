@@ -200,18 +200,37 @@ Analysed in Ghidra (`DD010_pnl_ARM.bin`, 196 functions). Findings:
 - **Peripheral map** (from the IRQ vector table, STM32G0x1 layout — real handlers
   only): EXTI4_15 (GPIO events), DMA1_Ch1, ADC, TIM1, TIM3, TIM14, USART1. SPI
   slots are the default handler → **the inter-processor link is UART, not SPI.**
-- **Panel → BMC protocol = MIDI (or MIDI-derived) bytes over USART1**, DMA'd out
-  (matches the DMA1_Ch1 handler) through a 128-byte ping-pong buffer
-  (`PanelTxMidiMessage(buf,len)` @ `0x08003EC8`). `main` is a poll→serialize→TX
-  super-loop emitting 3-byte packets. Status/opcode constants near `0x08004C90`:
+- **The panel↔main link is a bidirectional MIDI stream over USART1 @ 115200
+  baud, 8N1** (`USART1_UART_Init` sets `BRR`-equivalent `0x1C200` = 115200).
+  BOTH directions are MIDI — confirmed by decoding both handlers, not inferred.
+
+  **Panel → main (input events)** — `PanelTxMidiMessage(buf,len)` @ `0x08003EC8`,
+  DMA'd out (matches the DMA1_Ch1 handler) via a 128-byte ping-pong buffer.
+  `main` is a poll→serialize→TX super-loop emitting 3-byte packets. Opcodes
+  (constants near `0x08004C90`):
   - `0x90`/`0x91`/`0x93` = Note On, ch 0/1/3 (button/pad groups, press+velocity)
   - `0x80` = Note Off, ch 0
   - `0xFE` = Active Sensing (1-byte periodic keepalive)
   - encoder deltas clamped to signed 7-bit (`−0x40..0x3F`) before send.
+
+  **Main → panel (LED/display commands)** — RX is byte-at-a-time HAL
+  `Receive_IT` (`HAL_UART_RxCpltCallback` @ `0x08002808`) into a ring buffer,
+  parsed by `PanelParseMidiRx` @ `0x08003460` (a running-status MIDI state
+  machine: `≥0x80` = status, `0xF_` = system/real-time, else data; assembles
+  3-byte messages) and dispatched by `PanelDispatchMidiCommand` @ `0x08003FC0`:
+  - `0xA0` Poly Aftertouch `[idx, val]` → `PanelSetRgbLed`: idx 0..30 selects a
+    pad; a 3-byte-per-LED table maps it to 3 PWM channels (**RGB**), val = level.
+  - `0xB0` Control Change `[cc, val]` → `PanelSetIndicatorLed`: discrete GPIO
+    LEDs (cc 0/1/2 → specific bits), on when val≠0.
+  - `0xE0` Pitch Bend → 14-bit parameter.
+  - `0xFA` Start / `0xFB` Continue → transport/tempo sync.
+  - `0xFF` Reset → triggers a re-handshake (sets `main` event bit `0x80`).
+- **RTOS present:** RX buffering uses FreeRTOS-style queue primitives
+  (`...FromISR` privilege/exception-number detection).
 - **Division of labour confirmed:** this MCU is only the front-panel I/O
-  concentrator (matrix scan via the `74HC138`, LED drive, encoder/analog reads);
-  the **BMC is the master** (sequencer, ACB engine, audio/USB/MIDI/storage) and
-  drives the panel over the same UART.
+  concentrator (matrix scan via the `74HC138`, RGB pad + indicator LED drive,
+  encoder/analog reads); the **BMC is the master** (sequencer, ACB engine,
+  audio/USB/MIDI/storage) and drives the panel over this UART-MIDI link.
 
 Why this matters for the project: alt-firmware that replaces or augments the
 BMC would need to speak this UART-MIDI panel protocol to drive the UI — and it
