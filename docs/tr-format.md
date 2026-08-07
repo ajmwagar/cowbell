@@ -91,10 +91,32 @@ from one v1.51 backup: the *rest* of each 0x34 voice block (level/pan/tune/decay
 …), the exact TONE entry count, and cross-firmware stability are **not** yet
 confirmed. Don't trust it for *writing* kits until verified.
 
-To finish the voice block: save two kits differing by exactly one voice
-parameter and diff them (`fw-analyze diff --block`) to pin each field. Record 0
-vs record 1 differ in ~121 scattered bytes (name + all params), so a controlled
-one-change diff is the way to isolate individual fields.
+#### Voice block (0x34 bytes) — tentative structural map
+
+From value-distribution analysis over all 768 voice blocks + a blank-vs-active
+diff. **Types are inferred from default values; the names are guesses.** Only
+the tone ID is confirmed.
+
+| Off | Type | Default | Guess | Confidence |
+| --- | ---- | ------- | ----- | ---------- |
+| `+0x00` | u16 | — | **tone ID** | confirmed |
+| `+0x02` | u8 | `0x80` | pan (bipolar, center 0x80) | type likely, name guess |
+| `+0x03` | u8 | `0x80` | tune (bipolar) | type likely, name guess |
+| `+0x04` | u8 | `0xFF` | level or decay (unipolar max) | type likely, name guess |
+| `+0x05..0x0B` | — | `51 80 80 e0 01 01 80` | fixed template / reserved | — |
+| `+0x0C..0x1B` | — | `0x00` | padding | — |
+| `+0x1C..0x29` | mixed | `0x00` | sparse params (envelope/sends) | structural only |
+| `+0x2A..0x33` | — | `0x00` | padding | — |
+
+**Statistics have hit their ceiling for *naming*** — they can say `+0x02` is a
+centered bipolar param but not whether it's pan vs tune. Two ways to finish:
+
+1. **Controlled diff** — save two kits differing by exactly one voice parameter,
+   diff (`fw-analyze diff --block`). Needs an SD reader.
+2. **Decompile TR-EDITOR** (Roland's official editor) — its code carries the
+   full data model (param names, ranges) and the SysEx address map, which would
+   *name* every field and confirm these offsets. Needs no SD reader. See
+   `docs/prior-art.md` / the software-surface avenue.
 
 ## Losslessness contract
 
