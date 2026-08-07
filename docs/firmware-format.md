@@ -111,6 +111,35 @@ offset, under any processor spec. Disassembly of the update image is impossible
 until the key is recovered, and the key + decryption routine live in the
 **bootloader resident in NOR flash** — which is *not* shipped in this archive.
 
+### Key size & brute-force feasibility
+
+- **Block size = 64-bit is CONFIRMED; key size is UNKNOWN.** These are separate
+  numbers — "64-bit" here is the *block*, not the key. Key size is a property of
+  the (still-unidentified) cipher and cannot be read off the ciphertext. It only
+  becomes known once we see the decrypt routine (the NOR dump). Candidate key
+  sizes: DES 56, 3DES 112/168, XTEA/TEA 128, CAST-128 128, IDEA 128, Blowfish
+  up to 448.
+- **Brute-force feasibility is a cliff at ~56 vs ~128 bits.** Only **single DES
+  (56-bit)** is brute-forceable (~a day, ~$100 via a service like crack.sh).
+  Every ≥112-bit option is computationally impossible: 2^128 ≈ 10^38 keys — no
+  budget or timescale reaches it. Since the leading guesses (XTEA / custom
+  Feistel) are ~128-bit, the honest expectation is **the key is NOT
+  brute-forceable.**
+- **ECB weakness does not help.** ECB being a weak *mode* leaks *structure*
+  (repetition), not the key; it does not lower brute-force cost. The underlying
+  cipher is full-strength.
+- **The DES long-shot (logged for completeness).** The dominant fill block
+  `6B4C9A85 2C732831` is almost certainly `E(K, padding)` where padding is likely
+  8× `0x00` or 8× `0xFF` — i.e. a **known plaintext/ciphertext pair**, exactly
+  what a DES cracker needs. *If* the cipher is DES, feeding that one pair to
+  crack.sh recovers the key in ~a day. Two assumptions ride on it (that it is
+  DES, and the padding value); if it is a 128-bit cipher, one pair does nothing
+  to 2^128. Cheap, low-probability, non-zero — a fallback-to-a-fallback.
+- **Bottom line:** don't gate progress on brute-force. The key lives in the NOR
+  bootloader and is **read directly** once dumped, whatever its size — a 128-bit
+  key we could never brute-force is trivial to *read* off the chip that stores
+  it. And the NOR may hold the already-decrypted firmware, making the key moot.
+
 ### KEY FINDING: TR-6S and TR-8S share the encryption key (2026-08-07)
 
 Cross-correlating the encrypted `App1_Main` payloads of the TR-6S (`dd001`) and
