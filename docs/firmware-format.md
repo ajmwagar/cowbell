@@ -188,6 +188,38 @@ platforms and strengthens the working hypothesis that the audio SoCs are ARM too
 
 Carved image: `firmwares/t8_sys_v102/extracted/DD010_pnl_ARM.bin` (gitignored).
 
+#### App_Panel reverse-engineering results (2026-08-07)
+
+Analysed in Ghidra (`DD010_pnl_ARM.bin`, 196 functions). Findings:
+
+- **Toolchain: STM32Cube HAL + GCC/newlib.** `start` is the textbook GCC crt0
+  (data/bss init → `main`); the USART interrupt handler is byte-for-byte the HAL
+  `HAL_UART_IRQHandler` (operates on a HAL UART handle struct — reads `ISR` at
+  reg offset `0x1C`, `CR1`, `CR3`; PE/FE/NE/ORE error handling; Rx/Tx ISR
+  callbacks). So Roland builds these panels with CubeMX-generated scaffolding.
+- **Peripheral map** (from the IRQ vector table, STM32G0x1 layout — real handlers
+  only): EXTI4_15 (GPIO events), DMA1_Ch1, ADC, TIM1, TIM3, TIM14, USART1. SPI
+  slots are the default handler → **the inter-processor link is UART, not SPI.**
+- **Panel → BMC protocol = MIDI (or MIDI-derived) bytes over USART1**, DMA'd out
+  (matches the DMA1_Ch1 handler) through a 128-byte ping-pong buffer
+  (`PanelTxMidiMessage(buf,len)` @ `0x08003EC8`). `main` is a poll→serialize→TX
+  super-loop emitting 3-byte packets. Status/opcode constants near `0x08004C90`:
+  - `0x90`/`0x91`/`0x93` = Note On, ch 0/1/3 (button/pad groups, press+velocity)
+  - `0x80` = Note Off, ch 0
+  - `0xFE` = Active Sensing (1-byte periodic keepalive)
+  - encoder deltas clamped to signed 7-bit (`−0x40..0x3F`) before send.
+- **Division of labour confirmed:** this MCU is only the front-panel I/O
+  concentrator (matrix scan via the `74HC138`, LED drive, encoder/analog reads);
+  the **BMC is the master** (sequencer, ACB engine, audio/USB/MIDI/storage) and
+  drives the panel over the same UART.
+
+Why this matters for the project: alt-firmware that replaces or augments the
+BMC would need to speak this UART-MIDI panel protocol to drive the UI — and it
+is now a documented, well-understood interface. Caveat: this is the **T-8's**
+panel firmware; the TR-6S panel is the same design family but a distinct build
+(the TR update ships no panel sub-image, so the TR panel is flashed by another
+path — likely pushed by the BMC over the same UART).
+
 ## Integrity / signing
 
 - [x] Is there a **checksum/CRC** field? — **Yes**, at header `0x50` for
