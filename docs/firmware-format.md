@@ -124,15 +124,39 @@ TR-8S (`rpg42`) at 8-byte block granularity:
 66k identical 8-byte ciphertext blocks across two independent images is only
 possible if identical plaintext encrypts to identical ciphertext under the
 **same key** — i.e. TR-6S and TR-8S use **one shared platform-family key** in
-ECB mode, not per-device or per-model keys. The shared regions are almost
-certainly the **common DSP engine code + sample/wavetable ROM** of the two
-boxes. Practical implications:
+ECB mode, not per-device or per-model keys.
+
+**Positional confirmation (hardens "same key" to certainty).** Comparing the
+two ciphertexts at the *same* offset (not just as sets):
+
+- 4,359 blocks (1.4%) are byte-identical at the same offset, and one run is
+  **15,936 bytes of contiguous identical ciphertext at offset `0x252FB8`**
+  (plus ~760 B runs near `0x1D1318`). A 16 KB identical ciphertext run at a
+  fixed offset cannot occur by chance → **same key is now proven, not inferred.**
+- The *low* positional overlap (1.4%) alongside the *high* set overlap means the
+  shared content sits at **different offsets** in each image — sibling builds
+  that share code/data but are laid out differently (different feature sets,
+  code sizes), exactly as expected for two products on one platform.
+- Plaintext `init_param` positional byte-equality is similar: 1.8%.
+
+Practical implications:
 
 1. **Recover the key once, decrypt both** (and likely other RPG-/DD-family units).
-2. The 66k shared blocks map the boundary between shared-platform data and
-   device-specific data **without any decryption** — a free structural map.
+2. The shared blocks map the boundary between shared-platform content and
+   device-specific content **without any decryption** — a free structural map.
 3. Any plaintext obtained for one unit (e.g. a future NOR dump) is a
    **known-plaintext oracle** for the shared blocks of the other.
+
+**What this does and does NOT establish about the SoC.** It proves TR-6S and
+TR-8S share a firmware *platform* (key, container, CRC-32, load map
+`0x60000000`, `init_param`@`0x0033FFD0`, and substantial shared content). That
+makes a **shared main SoC highly likely** — Roland would not reuse one
+encryption key + bootloader scheme + memory map across two different
+architectures. Caveat for rigor: ECB block-sharing alone can't separate shared
+*code* from shared ISA-independent *data* (sample/wavetable ROM), so firmware
+comparison **strongly implies** but does not by itself *prove* the two share an
+ISA. Naming that SoC "E4E" rests on the T-8 photo + identical conventions;
+literal confirmation for the TR boards needs a board photo or a NOR dump.
 
 The **T-8 (`DD010`) `App_Main` uses a DIFFERENT key** — 0 shared blocks with
 either TR box, and 0% ECB duplication. So the AIRA Compact line is *not* a key
