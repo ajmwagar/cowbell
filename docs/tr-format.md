@@ -166,6 +166,37 @@ is a **read primitive over USB**; decompiling it yields the device address map
 and could enable a no-hardware read of device memory (see the software-surface
 avenue in `docs/prior-art.md`).
 
+## Pattern record (`PTN ` section)
+
+128 records of **`0x5FB8` (24,504) bytes**. Same framing as kits: 16-byte record
+header, then the schema data (`ptnCmn` header, then `ptnVar*` step/motion).
+
+Header fields **confirmed** against `Script.xml` `ptnCmn` + the manifest (name,
+tempo, kit all match for every pattern):
+
+| Off | Field | Type | Notes |
+| --- | ----- | ---- | ----- |
+| `+0x10` | NAMEA | string×16 | pattern name |
+| `+0x20` | TEMPO | u16 LE | **BPM × 10** (1440 → 144.0) |
+| `+0x22` | KIT REFFERENCE | u8 | kit slot 1–128 |
+
+Implemented as `Pattern` (`name`/`tempo_bpm`/`kit_ref`); `tr-format patterns`
+lists all 128 with tempo + kit — the basis for browsing / performance
+management.
+
+**Schema decoding rule.** `Script.xml` `<value>` types encode size as
+`intNxM` = ⌈N·M/8⌉ bytes (`int1x7`,`int2x4`→1; `int4x4`,`int2x7`→2; `int8x4`→4;
+`stringNx7`→N chars). Backup record offset ≈ schema offset + the 16-byte record
+header. This reproduces the voice block and the pattern header exactly.
+
+**Not yet done (offset model):** past the pattern header, accumulated schema
+offsets drift ~1 byte before the per-variation `LAST STEP` fields — one field's
+size rule isn't nailed yet. The `ptnVar*` step/motion data (the pattern
+*builder* core: per-variation A–H, 6 insts × 16 steps + sub-steps + motion, as
+`int8x4` step words) is blocked on finishing that model. This is the next target
+and unlocks pattern construction. FX (`FX  `) and SYS decode the same way from
+`Script.xml`.
+
 ## Losslessness contract
 
 The [`tr-format`] crate retains the original bytes and returns them unchanged

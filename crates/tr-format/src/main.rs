@@ -48,6 +48,14 @@ enum Command {
         /// 1-based kit slot number.
         number: usize,
     },
+    /// List patterns (index, name, tempo, kit reference).
+    Patterns {
+        /// A TR backup file.
+        backup: PathBuf,
+        /// Include empty (unnamed) slots.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -57,7 +65,32 @@ fn main() -> Result<()> {
         Command::Verify { backup } => verify(&backup),
         Command::Kits { backup, all } => kits(&backup, all),
         Command::Kit { backup, number } => kit(&backup, number),
+        Command::Patterns { backup, all } => patterns(&backup, all),
     }
+}
+
+fn patterns(path: &std::path::Path, all: bool) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let b = Backup::parse(bytes)?;
+    let raw = b.raw();
+    let mut shown = 0;
+    println!("  {:>3}  {:<18} {:>7}  KIT", "#", "NAME", "TEMPO");
+    for p in b.patterns() {
+        let name = p.name(raw);
+        if name.is_empty() && !all {
+            continue;
+        }
+        println!(
+            "  {:>3}  {:<18} {:>6.1}  {:>3}",
+            p.index + 1,
+            name,
+            p.tempo_bpm(raw),
+            p.kit_ref(raw)
+        );
+        shown += 1;
+    }
+    println!("{shown} pattern(s)");
+    Ok(())
 }
 
 fn kit(path: &std::path::Path, number: usize) -> Result<()> {

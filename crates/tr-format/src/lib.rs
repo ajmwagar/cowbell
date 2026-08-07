@@ -351,6 +351,66 @@ impl Backup {
     }
 }
 
+/// Size of one `PTN ` record (bytes): 128 records of `0x5FB8` fill the payload.
+pub const PATTERN_RECORD_SIZE: usize = 0x5fb8;
+/// Offset of the 16-char pattern name within a pattern record.
+pub const PATTERN_NAME_OFFSET: usize = 0x10;
+/// Offset of TEMPO (`u16` LE, BPM×10) — schema `ptnCmn.TEMPO`, range 400–3000.
+pub const PATTERN_TEMPO_OFFSET: usize = 0x20;
+/// Offset of KIT REFFERENCE (`u8`, 1–128) — which kit the pattern plays.
+pub const PATTERN_KIT_REF_OFFSET: usize = 0x22;
+
+/// A pattern record in the `PTN ` section. Header fields confirmed against TR
+/// Editor's `ptnCmn` schema + the backup manifest (name/tempo/kit all match).
+///
+/// NOTE: only the header (name/tempo/kit) is decoded. The per-variation step &
+/// motion data (`ptnVar*`) needs the schema offset model finished — see
+/// `docs/tr-format.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pattern {
+    /// 0-based slot index within the PTN section.
+    pub index: usize,
+    /// Byte offset of the record within the file.
+    pub offset: usize,
+}
+
+impl Pattern {
+    /// The pattern name (`+0x10`, 16 bytes, trailing spaces/NULs trimmed).
+    pub fn name(&self, raw: &[u8]) -> String {
+        let s = self.offset + PATTERN_NAME_OFFSET;
+        String::from_utf8_lossy(&raw[s..s + 16])
+            .trim_end_matches([' ', '\0'])
+            .to_string()
+    }
+
+    /// Tempo in BPM (the stored `u16` is BPM×10, so e.g. 1440 → 144.0).
+    pub fn tempo_bpm(&self, raw: &[u8]) -> f32 {
+        let o = self.offset + PATTERN_TEMPO_OFFSET;
+        u16::from_le_bytes([raw[o], raw[o + 1]]) as f32 / 10.0
+    }
+
+    /// The kit slot (1–128) this pattern references.
+    pub fn kit_ref(&self, raw: &[u8]) -> u8 {
+        raw[self.offset + PATTERN_KIT_REF_OFFSET]
+    }
+}
+
+impl Backup {
+    /// The pattern records in the `PTN ` section (128 on a full TR-6S backup).
+    pub fn patterns(&self) -> Vec<Pattern> {
+        let Some(sec) = self.find("PTN") else {
+            return Vec::new();
+        };
+        let n = sec.payload_len / PATTERN_RECORD_SIZE;
+        (0..n)
+            .map(|i| Pattern {
+                index: i,
+                offset: sec.payload_offset + i * PATTERN_RECORD_SIZE,
+            })
+            .collect()
+    }
+}
+
 /// Scan for container chunks: 4-byte-aligned offsets whose tag is known and
 /// whose reserved u32 (header+4) is zero. Best-effort directory; the retained
 /// bytes remain the source of truth for round-trip.
@@ -589,6 +649,32 @@ mod tests {
         let (bytes, _, _) = synthetic_with_kit_and_tones();
         let b = Backup::parse(bytes).unwrap();
         assert_eq!(b.tone_name(9999), None);
+    }
+
+    #[test]
+    fn pattern_header_fields() {
+        // Backup with one PTN record: name/tempo/kit at confirmed offsets.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"TR6S");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&5u32.to_le_bytes());
+        v.resize(HEADER_LEN, 0);
+        v.extend_from_slice(b"PTN ");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&(PATTERN_RECORD_SIZE as u32).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        let mut rec = vec![0u8; PATTERN_RECORD_SIZE];
+        rec[PATTERN_NAME_OFFSET..PATTERN_NAME_OFFSET + 10].copy_from_slice(b"Speak C0DE");
+        rec[PATTERN_TEMPO_OFFSET..PATTERN_TEMPO_OFFSET + 2].copy_from_slice(&1440u16.to_le_bytes());
+        rec[PATTERN_KIT_REF_OFFSET] = 14;
+        v.extend_from_slice(&rec);
+
+        let b = Backup::parse(v).unwrap();
+        let ptns = b.patterns();
+        assert_eq!(ptns.len(), 1);
+        assert_eq!(ptns[0].name(b.raw()), "Speak C0DE");
+        assert_eq!(ptns[0].tempo_bpm(b.raw()), 144.0);
+        assert_eq!(ptns[0].kit_ref(b.raw()), 14);
     }
 
     #[test]
