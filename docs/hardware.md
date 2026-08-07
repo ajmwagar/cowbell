@@ -11,12 +11,54 @@ seen referenced across Roland's post-AIRA generation:
 
 | Label seen | Notes |
 | ---------- | ----- |
-| **ESC2**   | Roland-branded custom ("Engine Sound Chip"?) part used in several AIRA / boutique units. Most likely candidate. |
+| **ESC2**   | Roland-branded custom ("Engine Sound Chip"?) part used in several AIRA / boutique units. Was the leading candidate for the TR-6S main chip. |
 | **BMC**    | "Behavior Modeling Core" branding — appears in ACB marketing; may be a marketing name for a DSP block rather than a discrete part. |
-| **E4E**    | Seen on some teardown photos; relationship to ESC2 unclear (successor? sibling?). |
+| **E4E**    | **CONFIRMED real, discrete Roland silicon** — see below. |
 
 Key unknowns tracked in `architecture-questions.md`: actual silicon vendor,
 ISA, clock, and whether it is a single SoC or a main CPU + DSP coprocessor.
+
+### E4E — confirmed discrete Roland SoC (2026-08-07)
+
+Confirmed from **third-party teardown photos (Reddit)** of a **Roland AIRA
+Compact "Beat 8"** (T-8-class) board — a sibling product, *not* the TR-6S, and
+**not the maintainer's own hardware.** Treat as external corroboration, not a
+first-party observation:
+
+- Marking: `Roland` / **`E4E`**, BGA package, `Roland MADE IN CHINA`.
+- Lot/part: `5100069694`, date code `2304` (2023, wk ~04) — same silicon
+  generation as the TR-6S.
+
+This resolves the "is E4E marketing or a real part" question: **it is a real,
+discrete, Roland-branded SoC.** The Beat 8 is a candidate **reference platform**
+for characterising the E4E (cheap, firmware-downloadable) — but note **we do not
+currently have one on hand**; the hardware-probing sub-tasks require acquiring a
+unit first. See `architecture-questions.md` next-steps.
+
+Caveat: this confirms E4E on the *Beat 8*. Whether the **TR-6S** main chip is
+also an E4E (vs. an ESC2) still needs a direct read of the TR-6S board markings
+to confirm. The two may share the E4E, or the TR-6S may use a larger sibling.
+
+### Panel / IO MCU — STM32G0 (ARM Cortex-M0+), confirmed
+
+Also from the same third-party Beat 8 photos: the panel/keybed PCB (connector
+`CN301`) is driven by an ST **STM32G0** in LQFP48 (`…C8T6`), i.e. an **ARM
+Cortex-M0+ (ARMv6-M)** — a standard, fully-documented part. A `74HC138`
+(`HA138`, IC304) 3-to-8 decoder next to it scans the button/LED matrix.
+
+Design takeaway: Roland splits the system into a **stock ARM Cortex-M for
+panel/IO** and the **custom E4E for audio/DSP**. The TR-6S very likely follows
+the same split. Any panel-MCU firmware is therefore plain ARM Thumb and
+directly analysable; the audio path is the hard, encrypted target.
+
+### Candidate external flash — VERIFY
+
+An **8-pin SOIC** marked `251` / `P2368` sits immediately beside the E4E in the
+Beat 8 photos. Package and placement are consistent with a small **SPI NOR
+flash / EEPROM**. If it is SPI NOR, it would be in-circuit clip-dumpable
+(SOIC-8, no soldering) **on a unit we obtained** — but we have no Beat 8 on hand,
+so this is a plan contingent on acquiring one, not something actionable now.
+Marking not yet matched to a datasheet; confirm before assuming.
 
 ## Confirmed memory parts
 

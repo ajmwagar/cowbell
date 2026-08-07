@@ -29,14 +29,21 @@ target
 # installer are copyrighted and stay strictly local. Keep working images under
 # firmware/ or dumps/ (any depth) and git will refuse to track them.
 firmware/
+firmwares/
 dumps/
 **/firmware/
+**/firmwares/
 **/dumps/
 
-# Common raw-image / dump extensions, wherever they land.
+# Common raw-image / dump extensions, wherever they land. Both cases, because a
+# case-sensitive (Linux) checkout will NOT treat *.bin as matching *.BIN — and
+# Roland ships uppercase names like T8_UPD.BIN.
 *.bin
+*.BIN
 *.rom
+*.ROM
 *.img
+*.IMG
 *.dump
 *.svd
 
