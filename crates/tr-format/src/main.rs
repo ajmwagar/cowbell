@@ -41,6 +41,13 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Show one kit: name + its 6 voices with resolved tone names.
+    Kit {
+        /// A TR backup file.
+        backup: PathBuf,
+        /// 1-based kit slot number.
+        number: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -49,7 +56,26 @@ fn main() -> Result<()> {
         Command::Info { backup } => info(&backup),
         Command::Verify { backup } => verify(&backup),
         Command::Kits { backup, all } => kits(&backup, all),
+        Command::Kit { backup, number } => kit(&backup, number),
     }
+}
+
+fn kit(path: &std::path::Path, number: usize) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let b = Backup::parse(bytes)?;
+    let raw = b.raw();
+    let kits = b.kits();
+    let k = kits
+        .get(number.wrapping_sub(1))
+        .with_context(|| format!("kit {number} out of range (1..={})", kits.len()))?;
+    println!("Kit {number}: {}", k.name(raw));
+    println!("  voices (tone IDs are tentative — see docs/tr-format.md):");
+    let ids = k.voice_tone_ids(raw);
+    for (voice, id) in tr_format::VOICES.iter().zip(ids) {
+        let tone = b.tone_name(id).unwrap_or_default();
+        println!("    {voice}  id {id:>4}  {tone}");
+    }
+    Ok(())
 }
 
 fn kits(path: &std::path::Path, all: bool) -> Result<()> {

@@ -45,7 +45,9 @@ pub const CHUNK_HEADER_LEN: usize = 16;
 /// Container-level chunk tags we recognize. The `reserved == 0` check (below)
 /// keeps 16-char name fields like `USER01` — which live *inside* the `SYS `
 /// payload — from being mistaken for chunks.
-const KNOWN_TAGS: &[&[u8; 4]] = &[b"SYS ", b"PTN ", b"KIT ", b"SMPL", b"FX  ", b"SONG"];
+const KNOWN_TAGS: &[&[u8; 4]] = &[
+    b"SYS ", b"PTN ", b"KIT ", b"SMPL", b"FX  ", b"SONG", b"TONE",
+];
 
 /// One tagged chunk located within a backup.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +189,29 @@ pub const KIT_NAME_OFFSET: usize = 0x10;
 /// Length of the kit-name field.
 pub const KIT_NAME_LEN: usize = 16;
 
+/// The six TR-6S voice slots, in record order.
+pub const VOICES: [&str; 6] = ["BD", "SD", "LT", "HC", "CH", "OH"];
+
+// --- Tentative kit-record voice offsets --------------------------------------
+// TODO(controlled-diff): these were reversed from a SINGLE v1.51 backup. The
+// tone-ID field is cross-checked (kits 0-3 all resolve to sensible tones), so
+// it is fairly solid — but the rest of each voice block, and whether the layout
+// is stable across firmware versions, is NOT confirmed. Before trusting this for
+// *writing* kits, verify with a save-change-save diff (see docs/tr-format.md).
+
+/// Offset of voice 0's (BD) `u16` tone-ID within a kit record.
+pub const VOICE_TONE_ID_OFFSET: usize = 0x194;
+/// Byte stride between consecutive voice blocks in a kit record.
+pub const VOICE_STRIDE: usize = 0x34;
+
+/// One `TONE` table entry (bytes): name[16] + params[20].
+pub const TONE_ENTRY_SIZE: usize = 0x24;
+/// The `TONE` payload begins with a 16-byte preamble; entry 0 (tone-ID 0) starts
+/// after it.
+pub const TONE_ENTRY_BASE_IN_PAYLOAD: usize = 0x10;
+/// Length of a tone name.
+pub const TONE_NAME_LEN: usize = 16;
+
 /// A kit record located within the `KIT ` section. A lightweight view — call
 /// [`Kit::name`] / [`Kit::bytes`] with the owning [`Backup`]'s `raw()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,9 +235,41 @@ impl Kit {
             .trim_end_matches([' ', '\0'])
             .to_string()
     }
+
+    /// The six voice tone-IDs (BD, SD, LT, HC, CH, OH), indices into the `TONE`
+    /// table. See the TODO on [`VOICE_TONE_ID_OFFSET`]: tentative layout.
+    pub fn voice_tone_ids(&self, raw: &[u8]) -> [u16; 6] {
+        let mut ids = [0u16; 6];
+        for (i, id) in ids.iter_mut().enumerate() {
+            let o = self.offset + VOICE_TONE_ID_OFFSET + i * VOICE_STRIDE;
+            *id = u16::from_le_bytes([raw[o], raw[o + 1]]);
+        }
+        ids
+    }
 }
 
 impl Backup {
+    /// Resolve a tone-ID to its name via the `TONE` section, or `None` if there
+    /// is no TONE section / the id is out of range.
+    ///
+    /// TODO(controlled-diff): entry base/stride reversed from a single backup;
+    /// the exact entry count is not yet pinned. Cross-checked against kits 0-3.
+    pub fn tone_name(&self, id: u16) -> Option<String> {
+        let sec = self.find("TONE")?;
+        let base = sec.payload_offset + TONE_ENTRY_BASE_IN_PAYLOAD;
+        let o = base + id as usize * TONE_ENTRY_SIZE;
+        let end = o + TONE_NAME_LEN;
+        // must stay within the TONE payload
+        if end > sec.payload_offset + sec.payload_len {
+            return None;
+        }
+        Some(
+            String::from_utf8_lossy(&self.raw[o..end])
+                .trim_end_matches([' ', '\0'])
+                .to_string(),
+        )
+    }
+
     /// The kit records in the `KIT ` section (128 on a full TR-6S backup), or an
     /// empty vec if there is no KIT section.
     ///
@@ -366,6 +423,76 @@ mod tests {
         assert_eq!(kits[0].bytes(b.raw()).len(), KIT_RECORD_SIZE);
         // still lossless
         assert_eq!(b.to_bytes(), bytes);
+    }
+
+    /// Backup with one KIT record carrying tone-IDs at the reversed offsets,
+    /// plus a TONE table so IDs resolve to names. Synthetic; no Roland bytes.
+    fn synthetic_with_kit_and_tones() -> (Vec<u8>, [u16; 6], Vec<String>) {
+        let tone_ids = [1u16, 5, 81, 17, 21, 22];
+        // TONE table with enough entries to cover the max id (81) + names for
+        // the ids we assert on.
+        let tone_names: Vec<String> = (0..=81u16)
+            .map(|i| format!("tone{i:03}"))
+            .collect();
+
+        let mut v = Vec::new();
+        v.extend_from_slice(b"TR6S");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&5u32.to_le_bytes());
+        v.resize(HEADER_LEN, 0);
+
+        // KIT chunk with a single record; place tone-IDs at the voice offsets.
+        v.extend_from_slice(b"KIT ");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&(KIT_RECORD_SIZE as u32).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        let mut rec = vec![0u8; KIT_RECORD_SIZE];
+        rec[KIT_NAME_OFFSET..KIT_NAME_OFFSET + 4].copy_from_slice(b"Kit0");
+        for (i, id) in tone_ids.iter().enumerate() {
+            let o = VOICE_TONE_ID_OFFSET + i * VOICE_STRIDE;
+            rec[o..o + 2].copy_from_slice(&id.to_le_bytes());
+        }
+        v.extend_from_slice(&rec);
+
+        // TONE chunk: 16-byte preamble, then 0x24 entries with name at start.
+        let mut tone_payload = vec![0u8; TONE_ENTRY_BASE_IN_PAYLOAD];
+        for name in &tone_names {
+            let mut entry = vec![0u8; TONE_ENTRY_SIZE];
+            let nb = name.as_bytes();
+            entry[..nb.len()].copy_from_slice(nb);
+            tone_payload.extend_from_slice(&entry);
+        }
+        v.extend_from_slice(b"TONE");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&(tone_payload.len() as u32).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&tone_payload);
+
+        (v, tone_ids, tone_names)
+    }
+
+    #[test]
+    fn kit_voice_tone_ids_are_read_at_voice_offsets() {
+        let (bytes, ids, _) = synthetic_with_kit_and_tones();
+        let b = Backup::parse(bytes).unwrap();
+        let kit = b.kits()[0];
+        assert_eq!(kit.voice_tone_ids(b.raw()), ids);
+    }
+
+    #[test]
+    fn tone_ids_resolve_to_names() {
+        let (bytes, ids, names) = synthetic_with_kit_and_tones();
+        let b = Backup::parse(bytes).unwrap();
+        for &id in &ids {
+            assert_eq!(b.tone_name(id).as_deref(), Some(names[id as usize].as_str()));
+        }
+    }
+
+    #[test]
+    fn tone_name_out_of_range_is_none() {
+        let (bytes, _, _) = synthetic_with_kit_and_tones();
+        let b = Backup::parse(bytes).unwrap();
+        assert_eq!(b.tone_name(9999), None);
     }
 
     #[test]

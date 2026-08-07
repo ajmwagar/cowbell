@@ -72,12 +72,26 @@ matching the manifest.
 | `+0x10` | 16 | **kit name** (ASCII, space/NUL-padded) | **done** |
 | `+0x20` | 0x500 | kit params + 6 voice configs (BD/SD/LT/HC/CH/OH) | **TODO** |
 
-The voices reference tones by **ID**, not by name: the tone/instrument names
-live in a separate table just past the KIT section (~`0x326FD4`) with **144-byte
-(`0x90`) entries**, name at the entry start. So decoding a voice = (a) find the
-6 tone-ID fields in the kit record, (b) map them into that 144-byte table.
+### Voices & the `TONE` table — tentative (single-backup RE)
 
-Reversing the per-voice params: save two kits differing by exactly one voice
+Voices reference tones by **ID**, resolved through a `TONE` section that follows
+the KIT section:
+
+- `TONE` chunk `@0x326F90`. Payload begins with a 16-byte preamble, then
+  **`0x24` (36-byte) entries**: `name[16]` + `params[20]`. Tone-ID 0 is the
+  first entry after the preamble.
+- Each kit record holds **6 voice tone-IDs** (`u16` LE) at
+  `record + 0x194 + voice*0x34` (stride `0x34`), voices in order
+  **BD, SD, LT, HC, CH, OH**.
+
+**Confidence:** the tone-ID offset is cross-checked — kits 0–3 all resolve to
+sensible tones (808→`808 Bass2`, 909→`909 Bass2`, 707→`707 Bass1/2`, 727→`727
+HighBongo/LB` …). Marked `TODO(controlled-diff)` in the crate because it comes
+from one v1.51 backup: the *rest* of each 0x34 voice block (level/pan/tune/decay/
+…), the exact TONE entry count, and cross-firmware stability are **not** yet
+confirmed. Don't trust it for *writing* kits until verified.
+
+To finish the voice block: save two kits differing by exactly one voice
 parameter and diff them (`fw-analyze diff --block`) to pin each field. Record 0
 vs record 1 differ in ~121 scattered bytes (name + all params), so a controlled
 one-change diff is the way to isolate individual fields.
