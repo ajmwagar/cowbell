@@ -87,3 +87,7 @@ roland_backup_dump/
 tr8s_kits_vol1/
 tr8s_projects/
 **/*.prm
+
+# macOS
+.DS_Store
+**/.DS_Store
