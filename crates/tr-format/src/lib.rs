@@ -138,9 +138,13 @@ impl Backup {
 
     /// Mutable access to the raw bytes, for low-level edits (e.g. a builder
     /// writing step velocities). `to_bytes()` reflects whatever is written here.
-    /// NOTE: editing a record does not recompute its per-record checksum
-    /// (`+0x08`, still unidentified), so edited backups are for analysis, not
-    /// yet device-safe writes.
+    ///
+    /// There is **no per-record checksum**: the `+0x08` field is zero for every
+    /// record except record 0 of a section, so length-preserving edits to user
+    /// slots (records ≥ 1) need no recomputation. Record 0 carries a
+    /// section-level token (unresolved algorithm); leave it untouched. See
+    /// `docs/tr-format.md`. Device acceptance of a modified backup is still
+    /// pending a hardware test.
     pub fn raw_mut(&mut self) -> &mut [u8] {
         &mut self.raw
     }

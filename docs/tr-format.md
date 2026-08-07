@@ -233,6 +233,33 @@ Note: the 25 step-array slots ≥ the 6 audible voices (the engine has more inst
 tracks + planes); mapping slot → instrument is a **higher-level** concern, not
 this crate's. FX (`FX  `) and SYS decode the same way from `Script.xml`.
 
+## The `+0x08` field — NOT a per-record checksum (2026-08-07)
+
+Investigated for device-safe writes. Result: **there is no per-record
+checksum.** The 8-byte field at `+0x08` is **zero for every record except
+record 0** of each section (verified: kits 1–127 and patterns 1–127 are all
+`00…00`). Only record 0 carries a value (kit `5CDA15CA6F3A2E12`, pattern
+`316A2D82BE026C64`), i.e. a single **section-level token** parked in record 0's
+header slot.
+
+Consequences:
+
+- **Editing records ≥ 1 is checksum-free** — the field is already zero and stays
+  zero, so length-preserving edits to any user kit/pattern slot need no
+  recomputation. This unblocks `tr-studio` writes to user slots.
+- The record-0 token's algorithm is unresolved: it is **not** a plain
+  CRC-32/64, MD5/SHA1/SHA256 (first/last 8) of the section, record, or backup
+  (all swept and ruled out). Likely keyed/Roland-specific or device-generated.
+  It matters only if you edit slot 0 *and* the device verifies section
+  integrity on restore — an empirical question to settle by testing a modified
+  backup on the device (needs the SD reader).
+- Ruled out as the algorithm: `ML::CRolandMessage::CheckSum` in TR Editor is the
+  **SysEx** checksum (sum two regions, negate, `& 0x7F`), not this field.
+
+Practical guidance for the librarian: edit user slots (≥1), preserve record 0
+untouched, and a written backup should be structurally valid; confirm the device
+accepts it once hardware is available.
+
 ## Losslessness contract
 
 The [`tr-format`] crate retains the original bytes and returns them unchanged
