@@ -1,8 +1,13 @@
 # Hardware — TR-6S chip ID findings
 
-Running notes on the parts inside the Roland TR-6S, based on visual inspection
-and package markings of the maintainer's own unit. Nothing here is confirmed by
-Roland; treat every line as "best current understanding" until corroborated.
+Running notes on the parts inside the Roland TR-6S. **Provenance:** the
+maintainer has **not** opened their unit (owned ~1 day as of 2026-08-07); part
+IDs here are from **third-party online teardowns/photos**, not first-party
+inspection. The E4E/STM32G0 findings specifically come from Reddit photos of a
+sibling **Beat 8**, not a TR-6S. Nothing here is confirmed by Roland or by
+first-party inspection; treat every line as "best current understanding" until
+corroborated. Getting a clear photo of the **TR-6S main SoC** is an open task —
+it would confirm whether the TR-6S main chip is the same E4E seen on the Beat 8.
 
 ## Compute / main SoC — OPEN
 
