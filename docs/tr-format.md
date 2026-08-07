@@ -184,18 +184,42 @@ Implemented as `Pattern` (`name`/`tempo_bpm`/`kit_ref`); `tr-format patterns`
 lists all 128 with tempo + kit — the basis for browsing / performance
 management.
 
-**Schema decoding rule.** `Script.xml` `<value>` types encode size as
-`intNxM` = ⌈N·M/8⌉ bytes (`int1x7`,`int2x4`→1; `int4x4`,`int2x7`→2; `int8x4`→4;
-`stringNx7`→N chars). Backup record offset ≈ schema offset + the 16-byte record
-header. This reproduces the voice block and the pattern header exactly.
+### Schema offset model — SOLVED
 
-**Not yet done (offset model):** past the pattern header, accumulated schema
-offsets drift ~1 byte before the per-variation `LAST STEP` fields — one field's
-size rule isn't nailed yet. The `ptnVar*` step/motion data (the pattern
-*builder* core: per-variation A–H, 6 insts × 16 steps + sub-steps + motion, as
-`int8x4` step words) is blocked on finishing that model. This is the next target
-and unlocks pattern construction. FX (`FX  `) and SYS decode the same way from
-`Script.xml`.
+Backup record offset = **`0x0F` + schema offset** (i.e. field data follows the
+16-byte record header). Per-field byte size from the `Script.xml` `<value>`
+`<type>`:
+
+| Type | Bytes |
+| ---- | ----- |
+| `int1x7`, `int2x4` | 1 |
+| `int2x7` | 2 |
+| `int8x4` | 4 |
+| `int4x4` | **⌈bits(range_max) / 7⌉** (7-bit-safe): 0–1023→2, 0–3000→2, 0–65535→3 |
+| `stringNx7` | N (16 for names) |
+
+The `int4x4` rule was the missing piece: TONE/TEMPO (≤12 bits) are 2 bytes, but
+16-bit masks like `SHUFFLE SWITCH` are 3. Validated: **102/103 `ptnCmn` fields
+land in range** (the one miss is `MASTER PROBABILITY` reading 0, an off value
+below its 1–201 UI range — not a drift). Encoded as `schema_value_size()` in the
+crate.
+
+### Pattern body structure
+
+`ptn` = `ptnCmn` (header, ~145 B) + **10 variations** (A–H + 2 fills; the schema
+lists them at addresses `01`–`0A`). Each variation holds per-instrument step
+arrays: `ptnVar01` = `INST01 PTN00…PTN15` — **16 steps as `int8x4` step words**.
+
+**Step word (4 bytes):** byte 0 = **velocity** (0 = step off, e.g. `0x50`=80 on);
+higher bytes carry sub-step/flam/probability (not decoded yet). Verified:
+variation A INST01 of "Speak C0DE" reads `. X . X X X . X …` at record `+0xA0` —
+a real drum pattern. Exposed as `StepWord` in the crate.
+
+**Remaining for the pattern builder:** the exact per-variation / per-instrument
+stride (the 10 variations × the `ptnVar*` sub-structs, incl. motion in
+`ptnVar26`) — the model is solved, so this is now transcription. Then a step
+grid read/write API, and pattern construction. FX (`FX  `) and SYS decode the
+same way from `Script.xml`.
 
 ## Losslessness contract
 

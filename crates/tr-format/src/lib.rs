@@ -351,6 +351,52 @@ impl Backup {
     }
 }
 
+/// Byte size of a `Script.xml` `<value>` type in the backup, given its range
+/// maximum. **This is the solved offset model** — accumulating these over a
+/// structType's fields (record offset = `0x0F` + schema offset, i.e. after the
+/// 16-byte record header) reproduces the kit voice block and the pattern header
+/// exactly (validated: 102/103 `ptnCmn` fields land in range).
+///
+/// - `int1x7`, `int2x4` → 1 byte
+/// - `int2x7` → 2 bytes
+/// - `int8x4` → 4 bytes
+/// - `int4x4` → `ceil(bits(range_max) / 7)` (7-bit-safe packing): 0–1023 → 2,
+///   0–3000 → 2, 0–65535 → 3
+/// - `stringNx7` → N bytes (16 for the name fields)
+pub fn schema_value_size(ty: &str, range_max: u32) -> Option<usize> {
+    Some(match ty {
+        "int1x7" | "int2x4" => 1,
+        "int2x7" => 2,
+        "int8x4" => 4,
+        "int4x4" => {
+            let bits = (32 - range_max.leading_zeros()).max(1) as usize;
+            bits.div_ceil(7)
+        }
+        t if t.starts_with("string") => t
+            .strip_prefix("string")
+            .and_then(|r| r.split('x').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(16),
+        _ => return None,
+    })
+}
+
+/// A pattern step word (`int8x4`, 4 bytes). Byte 0 is the velocity; 0 = the step
+/// is off. (Higher bytes carry sub-step/flam/probability — not decoded yet.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepWord {
+    pub raw: [u8; 4],
+}
+
+impl StepWord {
+    pub fn velocity(&self) -> u8 {
+        self.raw[0]
+    }
+    pub fn is_on(&self) -> bool {
+        self.raw[0] != 0
+    }
+}
+
 /// Size of one `PTN ` record (bytes): 128 records of `0x5FB8` fill the payload.
 pub const PATTERN_RECORD_SIZE: usize = 0x5fb8;
 /// Offset of the 16-char pattern name within a pattern record.
@@ -649,6 +695,30 @@ mod tests {
         let (bytes, _, _) = synthetic_with_kit_and_tones();
         let b = Backup::parse(bytes).unwrap();
         assert_eq!(b.tone_name(9999), None);
+    }
+
+    #[test]
+    fn schema_size_rule() {
+        // The solved offset model: confirmed sizes.
+        assert_eq!(schema_value_size("int1x7", 1), Some(1));
+        assert_eq!(schema_value_size("int2x4", 255), Some(1));
+        assert_eq!(schema_value_size("int2x7", 16383), Some(2));
+        assert_eq!(schema_value_size("int8x4", 0), Some(4));
+        // int4x4 = ceil(bits(range_max)/7): the key fix
+        assert_eq!(schema_value_size("int4x4", 1023), Some(2)); // TONE (10 bits)
+        assert_eq!(schema_value_size("int4x4", 3000), Some(2)); // TEMPO (12 bits)
+        assert_eq!(schema_value_size("int4x4", 65535), Some(3)); // SHUFFLE SWITCH (16 bits)
+        assert_eq!(schema_value_size("stringNx7", 0), Some(16));
+    }
+
+    #[test]
+    fn step_word_velocity() {
+        assert!(!StepWord { raw: [0, 0, 0, 0] }.is_on());
+        let on = StepWord {
+            raw: [0x50, 0, 0, 0],
+        };
+        assert!(on.is_on());
+        assert_eq!(on.velocity(), 80);
     }
 
     #[test]
