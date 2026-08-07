@@ -161,13 +161,22 @@ Carved image: `firmwares/t8_sys_v102/extracted/DD010_pnl_ARM.bin` (gitignored).
 
 ## Integrity / signing
 
-- [x] Is there a **checksum/CRC** field? — **Yes**, `0x46DE65B3` at header `0x50`.
-- [ ] **Algorithm unidentified.** Tested against the ciphertext payload and
-      ruled out: sum32, word-sum32 (LE and BE), sum16, CRC-32, Adler-32, XOR-32,
-      and whole-file variants. None match. The most likely explanation is that
-      the checksum covers the **decrypted plaintext**, implying the bootloader
-      decrypts first and verifies second — which cannot be confirmed without
-      the key.
+- [x] Is there a **checksum/CRC** field? — **Yes**, at header `0x50` for
+      `App1_Main` (9-char name) / `0x2C` for the compact `App*` (8-char name)
+      layout. TR-6S `0x46DE65B3`, TR-8S `0xE63B9547`, T-8 App_Panel `0x53C790FB`,
+      T-8 App_Main `0x0BF49F16`.
+- [x] **Algorithm — RESOLVED: standard CRC-32** (poly `0x04C11DB7`, reflected
+      in/out, init & xorout `0xFFFFFFFF` — i.e. zlib `crc32`), computed over the
+      image **body** (payload after the header, length = the header length
+      field). Recovered by known-plaintext: CRC-32 over the plaintext `App_Panel`
+      body equals its `0x2C` field **exactly** (`0x53C790FB`).
+- [x] **Checksum is over PLAINTEXT, not ciphertext — confirmed.** CRC-32 over
+      the *ciphertext* body of the encrypted images matches no header field, at
+      any range (TR-6S body → `0x25F6CEE3` ≠ `0x46DE65B3`; T-8 App_Main body →
+      `0x015424F4` ≠ `0x0BF49F16`). So the bootloader flow is **decrypt →
+      CRC-32 → compare**. Practical payoff: this is a **decryption oracle** —
+      the correct key/cipher is the one whose output CRC-32 equals the header
+      field, so key-recovery attempts self-validate with no plaintext eyeballing.
 - [ ] Is the image **cryptographically signed** (RSA/ECDSA)? No distinct
       fixed-size signature block is visible; the plaintext trailer is build
       metadata, not a signature. Encryption is confirmed, signing is not — and
