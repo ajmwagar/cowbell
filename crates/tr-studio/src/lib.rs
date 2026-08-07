@@ -7,7 +7,8 @@
 //! Everything here is plaintext user data — no firmware, no decryption.
 
 use tr_format::{
-    Backup, Pattern, StepWord, SubStep, PATTERN_STEPS_PER_TRACK, PATTERN_STEP_TRACKS, VOICES,
+    motion_lane_name, Backup, Pattern, StepWord, SubStep, MOTION_LANES, PATTERN_ARRAY_SLOTS,
+    PATTERN_STEPS_PER_TRACK, PATTERN_STEP_TRACKS, VOICES,
 };
 
 /// Step tracks 0..6 are the six audible voices (BD/SD/LT/HC/CH/OH); verified
@@ -154,6 +155,70 @@ impl StepGrid {
     }
 }
 
+/// One instrument/plane's recorded motion for a variation: for each of the
+/// three lanes, the per-step values (`None` = nothing recorded at that step).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MotionLanes {
+    /// The array slot this came from (12–24).
+    pub slot: usize,
+    /// `lanes[lane][step]`, with the lane's parameter name.
+    pub lanes: Vec<(&'static str, [Option<u8>; PATTERN_STEPS_PER_TRACK])>,
+}
+
+impl MotionLanes {
+    /// Read one motion slot (12–24) of a variation; `None` if not a motion slot.
+    pub fn read(
+        raw: &[u8],
+        pattern: &Pattern,
+        variation: usize,
+        slot: usize,
+    ) -> Option<MotionLanes> {
+        let mut lanes = Vec::new();
+        for lane in 0..MOTION_LANES {
+            let name = motion_lane_name(slot, lane)?;
+            let mut vals = [None; PATTERN_STEPS_PER_TRACK];
+            for (s, v) in vals.iter_mut().enumerate() {
+                *v = pattern
+                    .motion_word(raw, variation, slot, s)
+                    .and_then(|w| w.lane(lane));
+            }
+            lanes.push((name, vals));
+        }
+        Some(MotionLanes { slot, lanes })
+    }
+
+    /// Whether any lane recorded anything.
+    pub fn is_empty(&self) -> bool {
+        self.lanes
+            .iter()
+            .all(|(_, v)| v.iter().all(Option::is_none))
+    }
+
+    /// One line per lane that has data: `TUNE  | 124  --- 128 ...`.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        for (name, vals) in &self.lanes {
+            if vals.iter().all(Option::is_none) {
+                continue;
+            }
+            let cells: Vec<String> = vals
+                .iter()
+                .map(|v| v.map_or("  -".to_string(), |x| format!("{x:3}")))
+                .collect();
+            out.push_str(&format!("  {name:<14}|{}|\n", cells.join(" ")));
+        }
+        out
+    }
+}
+
+/// Every motion slot of a variation that has data, in slot order.
+pub fn variation_motion(raw: &[u8], pattern: &Pattern, variation: usize) -> Vec<MotionLanes> {
+    (PATTERN_STEP_TRACKS..PATTERN_ARRAY_SLOTS)
+        .filter_map(|slot| MotionLanes::read(raw, pattern, variation, slot))
+        .filter(|m| !m.is_empty())
+        .collect()
+}
+
 /// Convenience: read a pattern's variation grid straight from a backup.
 pub fn pattern_grid(backup: &Backup, pattern_number: usize, variation: usize) -> Option<StepGrid> {
     let p = *backup.patterns().get(pattern_number.checked_sub(1)?)?;
@@ -193,6 +258,36 @@ mod tests {
         assert!(!g.is_on(0, 1));
         assert_eq!(g.voice_row(0).unwrap()[0].velocity(), 100);
         assert_eq!(g.render().lines().count(), VOICES.len());
+    }
+
+    #[test]
+    fn reads_motion_lanes() {
+        use tr_format::PATTERN_RECORD_SIZE;
+        let mut v = synthetic_backup_with_pattern();
+        // var0, slot 12 (BD motion), step 2: TUNE=124, DECAY=116, CTRL=88,
+        // flags = lane0 + lane1 recorded.
+        let rec_start = v.len() - PATTERN_RECORD_SIZE;
+        let o = rec_start + 0xA0 + 4 + 12 * 64 + 2 * 4;
+        v[o..o + 4].copy_from_slice(&[124, 116, 88, 0b1100_0010]);
+        let b = Backup::parse(v).unwrap();
+        let p = b.patterns()[0];
+
+        let m = MotionLanes::read(b.raw(), &p, 0, 12).unwrap();
+        assert!(!m.is_empty());
+        assert_eq!(m.lanes[0].0, "TUNE");
+        assert_eq!(m.lanes[0].1[2], Some(124));
+        assert_eq!(m.lanes[1].1[2], Some(116));
+        assert_eq!(m.lanes[2].1[2], Some(88));
+        assert_eq!(m.lanes[0].1[0], None);
+        assert!(m.render().contains("TUNE"));
+
+        // An untouched motion slot is empty, and only slot 12 shows up.
+        assert!(MotionLanes::read(b.raw(), &p, 0, 13).unwrap().is_empty());
+        assert_eq!(MotionLanes::read(b.raw(), &p, 0, 0), None);
+        let planes = variation_motion(b.raw(), &p, 0);
+        assert_eq!(planes.len(), 1);
+        assert_eq!(planes[0].slot, 12);
+        assert!(variation_motion(b.raw(), &p, 1).is_empty());
     }
 
     #[test]

@@ -314,6 +314,56 @@ later-firmware feature. `StepWord`'s setters preserve every undecoded bit, and
 `StepWord::unknown_bits()` reports them, so an edit can never silently drop
 per-step data this crate doesn't understand yet.
 
+### Motion (`PRM`) arrays — slots 12–24
+
+The same 4-byte word, different meaning. `Script.xml`'s **`motionPrm` dataTable**
+is the map: each entry has an `<order>` field, which is the **byte index of that
+parameter within the PRM word**.
+
+| Byte | INST slots 12–22 | `OTH0` (slot 23) | `OTH1` (slot 24) |
+| ---- | ---------------- | ---------------- | ---------------- |
+| `0` | TUNE (centre 128) | DELAY FEEDBACK | REVERB LEVEL |
+| `1` | DECAY | DELAY LEVEL | MFX SW (0/1) |
+| `2` | CTRL (centre 128) | DELAY TIME | MFX DEPTH |
+| `3` | flags — see below | flags | flags |
+
+`VELOCITY` and `PROBABILITY` are in that same table with **`order -1`**: they are
+*not* in the PRM arrays, they live in the step word. That independently confirms
+the step-word decode above, and says per-step probability is a step-word field.
+
+**Which OTH array is which is forced, not guessed.** The delay's three
+parameters use orders 0/1/2, so delay must occupy an array by itself; reverb
+(order 0) and MFX (orders 1, 2) fill the other without collision. The empirical
+tiebreak: `MFX SW` has `<max>1</max>`, and slot 24 byte 1 is the only lane in the
+whole backup that is strictly `{0, 1}`. So slot 24 = reverb + MFX, slot 23 =
+delay. Reading it back: `[TR]ntablist` variation A shows `MFX SW |1 - - …|` with
+`MFX DEPTH` values beside it.
+
+**Ground truth check.** The manifest marks 54 patterns `Motion ON`. Every one of
+them has data in slots 12–24, and 73 of the 74 unmarked patterns have none — a
+**127/128** match. The single exception (`DnB-FM`) has exactly one stale word, in
+a fill variation, on a pattern whose motion switch is off.
+
+**The flags byte (byte 3)** is never zero on a live motion word, because a lane
+value of `0` is a legal parameter value and needs a bit to distinguish it from
+"nothing recorded here". Confirmed across all 8,933 live motion words, with
+**zero** violations:
+
+- **bit 7 ⟺ lane 0 records a value** (100%: every non-zero lane 0 has it set)
+- **bit 6 ⟺ lane 1 records a value** (100%)
+
+**Lane 2's flag is unresolved.** No single bit implies it across slots — bit 1
+fits the INST slots at 90–100% but not exactly, bit 0 fits slot 23 at 100%, and
+slot 24 matches nothing cleanly. The low six bits are only 63–90% constant across
+a track, so they are neither a clean per-step lane flag nor a pure per-track
+selector. `MotionWord::lane_recorded(2)` returns `None` (undetermined) rather
+than guessing, and `MotionWord::lane(2)` falls back to "non-zero means recorded"
+— which under-reports a genuine recorded `0`. Settling this needs a controlled
+diff (record motion on one parameter, save, diff), i.e. hardware.
+
+Exposed as `MotionWord` / `motion_lane_name()` / `Pattern::motion_word()` in
+`tr-format` and `MotionLanes` + `tr-studio motion <backup> <n> <var>` above it.
+
 FX (`FX  `) and SYS decode the same way from `Script.xml`.
 
 ## The `+0x08` field — NOT a per-record checksum (2026-08-07)
@@ -364,12 +414,12 @@ Next (record internals — the RE that turns bytes into editable fields):
    map them into the 144-byte tone table (~`0x326FD4`); then per-voice params
    (level/pan/tune/decay/…) via controlled one-change diffs. Also identify the
    `+0x08` per-record checksum so kits can be *written* back safely.
-2. **Pattern motion (slots 12–24)** — the step words and the slot map are done;
-   the `INSTnn PRMnn` / `OTH0-1` motion planes are not. Also still open on the
-   step word: which zero bits hold **per-step probability** (no factory pattern
-   sets it). Both want the "save two patterns differing by one step/param, then
-   diff" technique — `fw-analyze diff --block`/byte-diff pinpoints the changed
-   field.
+2. **Pattern record** — step words, the slot map, and the motion lane map are
+   done. Still open: the **lane-2 flag bit** and the rest of the motion flags
+   byte, and which step-word bits hold **per-step probability** (no factory
+   pattern sets it). Both want the "save two patterns differing by one
+   step/param, then diff" technique — `fw-analyze diff --block`/byte-diff
+   pinpoints the changed field — which needs the device.
 3. **`SYS ` ↔ `init_param`** — reconcile the shared system-param body with the
    already-mapped `init_param` structure (`docs/firmware-format.md`).
 4. **`FX  `** and the file-header checksum (`0x20` region).

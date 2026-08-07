@@ -29,9 +29,10 @@
 //! librarian needs: editing one section can never corrupt unknown/reserved data.
 //!
 //! Record internals are decoded incrementally: kit framing, names, voice blocks
-//! and tone IDs; pattern headers, the variation/array-slot map, and the step
-//! word (velocity, sub step, ALTERNATE). Motion planes and per-step probability
-//! are still open — see `docs/tr-format.md`.
+//! and tone IDs; pattern headers, the variation/array-slot map, the step word
+//! (velocity, sub step, ALTERNATE) and the motion lanes (tune/decay/ctrl and the
+//! delay/reverb/MFX planes). Still open: per-step probability and part of the
+//! motion flags byte — see `docs/tr-format.md`.
 
 use anyhow::{bail, Context, Result};
 
@@ -592,12 +593,104 @@ pub fn track_role(track: usize) -> Option<TrackRole> {
     })
 }
 
-/// A pattern record in the `PTN ` section. Header fields confirmed against TR
-/// Editor's `ptnCmn` schema + the backup manifest (name/tempo/kit all match).
+// --- Motion (`PRM`) arrays ----------------------------------------------------
+// Mapped from TR Editor's `motionPrm` dataTable, whose `<order>` field is the
+// byte index of a parameter within the 4-byte PRM word. VELOCITY and
+// PROBABILITY carry `order -1` — they live in the [`StepWord`], not here.
+// See docs/tr-format.md.
+
+/// Parameter lanes in a [`MotionWord`]; the 4th byte is [`MotionWord::flags`].
+pub const MOTION_LANES: usize = 3;
+
+/// Lane names for instrument motion slots (`INSTnn PRM`), by lane index.
+pub const MOTION_LANES_INST: [&str; MOTION_LANES] = ["TUNE", "DECAY", "CTRL"];
+/// Lane names for `OTH0` (`ptnVar24`) — the delay plane.
+pub const MOTION_LANES_DELAY: [&str; MOTION_LANES] =
+    ["DELAY FEEDBACK", "DELAY LEVEL", "DELAY TIME"];
+/// Lane names for `OTH1` (`ptnVar25`) — the reverb + master-FX plane.
+pub const MOTION_LANES_REVERB_MFX: [&str; MOTION_LANES] = ["REVERB LEVEL", "MFX SW", "MFX DEPTH"];
+
+/// The parameter recorded by `lane` of a motion word in array slot `track`, or
+/// `None` if the slot is not a motion slot / the lane is out of range.
+pub fn motion_lane_name(track: usize, lane: usize) -> Option<&'static str> {
+    let names = match track_role(track)? {
+        TrackRole::Motion(_) => &MOTION_LANES_INST,
+        TrackRole::OtherMotion(0) => &MOTION_LANES_DELAY,
+        TrackRole::OtherMotion(_) => &MOTION_LANES_REVERB_MFX,
+        _ => return None,
+    };
+    names.get(lane).copied()
+}
+
+/// A motion word (`INSTnn PRMnn` / `OTHn PRMnn`, `int8x4`, 4 bytes).
 ///
-/// NOTE: only the header (name/tempo/kit) is decoded. The per-variation step &
-/// motion data (`ptnVar*`) needs the schema offset model finished — see
-/// `docs/tr-format.md`.
+/// | Byte | Field |
+/// | ---- | ----- |
+/// | 0 | lane 0 value — see [`motion_lane_name`] |
+/// | 1 | lane 1 value |
+/// | 2 | lane 2 value |
+/// | 3 | flags — bit 7 = lane 0 recorded, bit 6 = lane 1 recorded, rest unknown |
+///
+/// A lane's value of 0 is ambiguous on its own (0 is a legal parameter value),
+/// which is what the flag bits are for. Bits 7 and 6 are confirmed: across all
+/// 8,933 live motion words in the reference backup, a non-zero lane 0 always has
+/// bit 7 set and a non-zero lane 1 always has bit 6 set, with **zero**
+/// violations. **Lane 2's flag is not resolved** — no single bit implies it
+/// across slots, so [`MotionWord::lane_recorded`] returns `None` for it rather
+/// than guessing. Tune and Ctrl are bipolar with centre 128 (`<offset>128`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MotionWord {
+    pub raw: [u8; 4],
+}
+
+impl MotionWord {
+    /// The raw byte of a lane (0–2), or 0 if out of range. Does not consult the
+    /// flags — see [`MotionWord::lane`].
+    pub fn lane_raw(&self, lane: usize) -> u8 {
+        if lane < MOTION_LANES {
+            self.raw[lane]
+        } else {
+            0
+        }
+    }
+
+    /// The lane's value if the word records one, using the confirmed flag bits.
+    /// Returns `None` when the flag is clear, and — for lane 2, whose flag bit
+    /// is unknown — falls back to "non-zero means recorded", which under-reports
+    /// a genuine recorded 0.
+    pub fn lane(&self, lane: usize) -> Option<u8> {
+        match self.lane_recorded(lane) {
+            Some(true) => Some(self.lane_raw(lane)),
+            Some(false) => None,
+            None => (self.lane_raw(lane) != 0).then(|| self.lane_raw(lane)),
+        }
+    }
+
+    /// Whether the lane records a value: `Some(true)`/`Some(false)` for the
+    /// confirmed lanes 0 and 1, `None` (undetermined) for lane 2 and beyond.
+    pub fn lane_recorded(&self, lane: usize) -> Option<bool> {
+        match lane {
+            0 => Some(self.raw[3] & 0x80 != 0),
+            1 => Some(self.raw[3] & 0x40 != 0),
+            _ => None,
+        }
+    }
+
+    /// The flags byte (byte 3). Never 0 on a live word in the reference backup.
+    pub fn flags(&self) -> u8 {
+        self.raw[3]
+    }
+
+    /// Whether the word is entirely empty (no motion recorded at this step).
+    pub fn is_empty(&self) -> bool {
+        self.raw == [0; 4]
+    }
+}
+
+/// A pattern record in the `PTN ` section. Header fields confirmed against TR
+/// Editor's `ptnCmn` schema + the backup manifest (name/tempo/kit all match);
+/// the body is addressed by array slot via [`track_role`] — [`StepWord`]s in
+/// slots 0–11, [`MotionWord`]s in slots 12–24. See `docs/tr-format.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pattern {
     /// 0-based slot index within the PTN section.
@@ -713,6 +806,53 @@ impl Pattern {
         if o + 4 > self.offset + PATTERN_RECORD_SIZE || o + 4 > raw.len() {
             return false;
         }
+        raw[o..o + 4].copy_from_slice(&word.raw);
+        true
+    }
+
+    /// The [`MotionWord`] at (`variation`, `track`, `step`), or `None` if
+    /// `track` is not a motion slot (12–24) or the read is out of range.
+    pub fn motion_word(
+        &self,
+        raw: &[u8],
+        variation: usize,
+        track: usize,
+        step: usize,
+    ) -> Option<MotionWord> {
+        if variation >= PATTERN_VARIATIONS
+            || step >= PATTERN_STEPS_PER_TRACK
+            || !matches!(
+                track_role(track),
+                Some(TrackRole::Motion(_) | TrackRole::OtherMotion(_))
+            )
+        {
+            return None;
+        }
+        let o = self.step_word_offset(variation, track, step);
+        let end = o + 4;
+        if end > self.offset + PATTERN_RECORD_SIZE || end > raw.len() {
+            return None;
+        }
+        Some(MotionWord {
+            raw: [raw[o], raw[o + 1], raw[o + 2], raw[o + 3]],
+        })
+    }
+
+    /// Low-level write of a whole [`MotionWord`]. The flags byte carries bits
+    /// this crate has not decoded, so read-modify-write rather than composing a
+    /// word from scratch. Returns false if out of range.
+    pub fn set_motion_word(
+        &self,
+        raw: &mut [u8],
+        variation: usize,
+        track: usize,
+        step: usize,
+        word: MotionWord,
+    ) -> bool {
+        if self.motion_word(raw, variation, track, step).is_none() {
+            return false;
+        }
+        let o = self.step_word_offset(variation, track, step);
         raw[o..o + 4].copy_from_slice(&word.raw);
         true
     }
@@ -1051,6 +1191,94 @@ mod tests {
             .unknown_bits(),
             0
         );
+    }
+
+    #[test]
+    fn motion_lane_names_follow_the_slot_role() {
+        // INST motion slots: TUNE/DECAY/CTRL, from motionPrm <order>.
+        assert_eq!(motion_lane_name(12, 0), Some("TUNE"));
+        assert_eq!(motion_lane_name(12, 1), Some("DECAY"));
+        assert_eq!(motion_lane_name(12, 2), Some("CTRL"));
+        assert_eq!(motion_lane_name(22, 0), Some("TUNE"));
+        // OTH0 = the delay plane, OTH1 = reverb + master FX.
+        assert_eq!(motion_lane_name(23, 0), Some("DELAY FEEDBACK"));
+        assert_eq!(motion_lane_name(23, 2), Some("DELAY TIME"));
+        assert_eq!(motion_lane_name(24, 0), Some("REVERB LEVEL"));
+        assert_eq!(motion_lane_name(24, 1), Some("MFX SW"));
+        assert_eq!(motion_lane_name(24, 2), Some("MFX DEPTH"));
+        // Step slots and the flags byte are not motion lanes.
+        assert_eq!(motion_lane_name(0, 0), None);
+        assert_eq!(motion_lane_name(11, 0), None);
+        assert_eq!(motion_lane_name(12, MOTION_LANES), None);
+    }
+
+    #[test]
+    fn motion_word_lanes_and_flags() {
+        // Both confirmed flags set, all three lanes carrying values.
+        let w = MotionWord {
+            raw: [124, 116, 88, 0b1100_0010],
+        };
+        assert_eq!(w.lane_recorded(0), Some(true));
+        assert_eq!(w.lane_recorded(1), Some(true));
+        assert_eq!(w.lane_recorded(2), None); // flag bit unresolved
+        assert_eq!(w.lane(0), Some(124));
+        assert_eq!(w.lane(1), Some(116));
+        assert_eq!(w.lane(2), Some(88)); // falls back to non-zero
+        assert_eq!(w.flags(), 0b1100_0010);
+        assert!(!w.is_empty());
+
+        // Flags clear: a 0 byte means "not recorded", not "recorded as 0".
+        let w = MotionWord {
+            raw: [0, 0, 0, 0b0000_0010],
+        };
+        assert_eq!(w.lane(0), None);
+        assert_eq!(w.lane(1), None);
+        assert_eq!(w.lane(2), None);
+        assert_eq!(w.lane_raw(0), 0);
+        assert_eq!(w.lane_raw(MOTION_LANES), 0);
+
+        // A recorded 0 on a confirmed lane is distinguishable from "not set".
+        let w = MotionWord {
+            raw: [0, 0, 0, 0b1000_0000],
+        };
+        assert_eq!(w.lane(0), Some(0));
+        assert_eq!(w.lane(1), None);
+        assert!(MotionWord { raw: [0; 4] }.is_empty());
+    }
+
+    #[test]
+    fn motion_word_reads_only_from_motion_slots() {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"TR6S");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&5u32.to_le_bytes());
+        v.resize(HEADER_LEN, 0);
+        v.extend_from_slice(b"PTN ");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&(PATTERN_RECORD_SIZE as u32).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        let mut rec = vec![0u8; PATTERN_RECORD_SIZE];
+        // var0, slot 12 (BD motion), step 1 => 0xA0 + 4 + 12*64 + 4
+        let o = 0xA0 + 4 + 12 * 64 + 4;
+        rec[o..o + 4].copy_from_slice(&[124, 116, 88, 0b1100_0010]);
+        v.extend_from_slice(&rec);
+
+        let mut b = Backup::parse(v).unwrap();
+        let p = b.patterns()[0];
+        let w = p.motion_word(b.raw(), 0, 12, 1).unwrap();
+        assert_eq!(w.lane(0), Some(124));
+        assert_eq!(motion_lane_name(12, 0), Some("TUNE"));
+        // Step slots are rejected, and step_word rejects motion slots.
+        assert_eq!(p.motion_word(b.raw(), 0, 0, 1), None);
+        assert_eq!(p.motion_word(b.raw(), 0, PATTERN_ARRAY_SLOTS, 1), None);
+        assert_eq!(p.step_word(b.raw(), 0, 12, 1), None);
+
+        // Round-trip a write through the same offset.
+        let mut w2 = w;
+        w2.raw[0] = 200;
+        assert!(p.set_motion_word(b.raw_mut(), 0, 12, 1, w2));
+        assert_eq!(p.motion_word(b.raw(), 0, 12, 1).unwrap().lane(0), Some(200));
+        assert!(!p.set_motion_word(b.raw_mut(), 0, 0, 1, w2));
     }
 
     #[test]
