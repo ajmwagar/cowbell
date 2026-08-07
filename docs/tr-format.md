@@ -118,6 +118,43 @@ centered bipolar param but not whether it's pan vs tune. Two ways to finish:
    *name* every field and confirm these offsets. Needs no SD reader. See
    `docs/prior-art.md` / the software-surface avenue.
 
+## TR Editor data model (oracle)
+
+Roland's official **TR Editor** (Mac/Win) is a **JUCE C++ app** whose binary
+keeps its mangled C++ symbols and a full parameter-path table — a definitive map
+of the device data model. (Analyzed locally for interoperability; the app is not
+committed.) The parameter tree maps 1:1 onto the backup sections:
+
+| Model path | Backup section |
+| ---------- | -------------- |
+| `fm.usrKit[k].kitCmn.NAMEA` | KIT record name (`+0x10`) — confirmed |
+| `fm.usrKit[k].instCommon[i]` | **the per-voice block** (6 insts/kit) |
+| `fm.usrKit[k].instShare[i]`, `instFxCommon[i]`, `instFxShare[i]`, `kitMfxShare` | other kit sub-structures |
+| `fm.usrPtn[p].ptnCmn` (`NAMEA`, `KIT REFFERENCE`), `.ptnVar[v]` | PTN record + variations (the 1/2/S) |
+| `fm.tone[t].toneCmn` (`NAMEA`, `Category`, `Type`, `LOOP`) | TONE table |
+| `fm.PCM_TONE[t].tonePcm` (`Address`, `Channel`, `Size`) | SMPL / sample refs |
+| `fm.SYS.*` | SYS chunk |
+
+**Instrument (voice) param vocabulary** (`inst*` — the leaves of `instCommon`):
+`instToneValueRef` (**= our `+0x00` tone-ID, confirmed by name**), `level`,
+`instOutput`, `instGroupCombo` (mute group), `instFilterValueRef`,
+`instCtrlKnob` / `instCtrlSelect` / `instCtrlCombo` / `instCtrlPrm` (the
+assignable **CTRL** knobs — tone-dependent), `instLastStepSwValueRef`,
+`instSelectValueRef`.
+
+Note: there is **no fixed pan/tune/decay** — beyond Tone/Level, instrument
+tweaking is via the assignable CTRL knobs. This supersedes the earlier
+"pan/tune" guesses in the voice-block map: `+0x02`/`+0x03` (bipolar, center
+`0x80`) are more likely CTRL-knob values, `+0x04` a level/output field. The
+definitive **name→byte-offset** mapping needs decompiling TR Editor's backup
+serializer / param table (the imported `TREditor_x86_64` in the Ghidra project).
+
+**SysEx read/write:** TR Editor implements `FKoaSendRq1` / `FKoaSendDt1` /
+`FKoaRequestRq1Dt1` — i.e. Roland **RQ1 (data request) / DT1 (data set)**. RQ1
+is a **read primitive over USB**; decompiling it yields the device address map
+and could enable a no-hardware read of device memory (see the software-surface
+avenue in `docs/prior-art.md`).
+
 ## Losslessness contract
 
 The [`tr-format`] crate retains the original bytes and returns them unchanged

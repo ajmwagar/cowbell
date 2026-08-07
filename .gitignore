@@ -82,3 +82,8 @@ roland_backup_dump/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Downloaded Roland content packs (kits/projects/samples) — keep local.
+tr8s_kits_vol1/
+tr8s_projects/
+**/*.prm
