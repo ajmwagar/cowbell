@@ -79,15 +79,29 @@ enum Command {
         expect: Option<u32>,
     },
 
-    /// Byte-level diff of two firmware images.
+    /// Diff two firmware images: byte-level runs, or block-aligned ("ECB").
+    ///
+    /// Default (byte mode) reports contiguous runs of differing bytes. With
+    /// `--block N` (N>0) it instead runs block-aligned analysis at block size
+    /// N (typical 8): per-image duplicate-block ratio, set-based and
+    /// positional block overlap, and the longest same-offset identical run —
+    /// the signatures that reveal shared ECB-encrypted content and a shared
+    /// key. `--offset O` starts both images at byte O first (e.g. to skip the
+    /// ~96-byte plaintext header and compare only the encrypted body).
     Diff {
         /// First image.
         a: PathBuf,
         /// Second image.
         b: PathBuf,
-        /// Cap the number of differing runs printed.
+        /// Cap the number of differing (or identical-run) entries printed.
         #[arg(long, default_value_t = 64)]
         max_runs: usize,
+        /// Block size in bytes for block-aligned analysis. 0 = byte diff.
+        #[arg(long, default_value_t = 0)]
+        block: usize,
+        /// Start both images at this byte offset before comparing.
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
     },
 
     /// Shell out to `binwalk` if it is installed (signature scan by default).
@@ -121,7 +135,13 @@ fn main() -> Result<()> {
             len,
             expect,
         } => checksum::run(&image, offset, len, expect),
-        Command::Diff { a, b, max_runs } => diff::run(&a, &b, max_runs),
+        Command::Diff {
+            a,
+            b,
+            max_runs,
+            block,
+            offset,
+        } => diff::run(&a, &b, max_runs, block, offset),
         Command::Binwalk { image, args } => run_binwalk(&image, &args),
     }
 }
