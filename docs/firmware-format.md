@@ -33,19 +33,51 @@ by the updater.
 
 ### Cross-platform: the container format is a Roland-wide convention
 
-Confirmed identical across three products (all `tar` + per-image 96-byte
+Confirmed identical across **five** products (all `tar` + per-image 96-byte
 `App*` header):
 
-| Product | Update file | Model code | Members |
-| ------- | ----------- | ---------- | ------- |
-| **TR-6S** | `TR6S_UP.bin` | `dd001` | `App1_Main` (enc) + `init_param` |
-| **TR-8S** | `TR8S_UP.bin` | `rpg42` | `App1_Main` (enc) + `init_param` |
-| **T-8 / Beat 8** | `T8_UPD.BIN` | `DD010` | `App_Main` (enc) + `App_Panel` (**plaintext ARM**) |
+| Product | Update file | Model code | SoC | Members |
+| ------- | ----------- | ---------- | --- | ------- |
+| **TR-6S** | `TR6S_UP.bin` | `dd001` | BMC | `App1_Main` (enc) + `init_param` |
+| **TR-8S** | `TR8S_UP.bin` | `rpg42` | BMC | `App1_Main` (enc) + `init_param` |
+| **T-8 / Beat 8** | `T8_UPD.BIN` | `DD010` | E4E | `App_Main` (enc) + `App_Panel` (**plaintext ARM**) |
+| **J-6** | `J6_UPD.BIN` | `DD011` | E4E | `App_Main` (enc) + `App_Panel` (**plaintext ARM**) |
+| **E-4** | `E4_UPD.BIN` | `DD012` | E4E | `App_Main` (enc) + `App_Panel` (**plaintext ARM**) |
 
 Naming note: the big boxes use `App1_Main` (the `1` implying multiple app
-processors); the T-8 uses `App_Main` + a separate `App_Panel`. The TR-6S/TR-8S
-ship no panel sub-image in the update — their panel MCU is updated by another
-path or bundled in the main image.
+processors); the AIRA Compacts use `App_Main` + a separate `App_Panel`. The
+TR-6S/TR-8S ship no panel sub-image in the update — their panel MCU is updated by
+another path or bundled in the main image.
+
+### Two encryption-key families — TR/BMC vs AIRA-Compact/E4E (2026-08-07)
+
+Cross-correlating all five encrypted app images at 8-byte block granularity
+reveals **two disjoint key domains**, tracking the SoC:
+
+- **TR / BMC key:** TR-6S ↔ TR-8S share it (66,233 shared blocks; 15,936-byte
+  identical run). See the KEY FINDING section below.
+- **AIRA-Compact / E4E key:** T-8, J-6, and E-4 share it among themselves
+  (T8↔J6 1,870 shared blocks; J6↔E4 1,732; T8↔E4 877 — far above chance given
+  0% internal ECB repetition, and their first encrypted block is byte-identical
+  `3DAAFBD228D29316`). All three load `App_Main` at `0x60000000`.
+- **The two families are disjoint:** the T-8 (E4E) app shares **zero** blocks
+  with the TR (BMC) apps. Different SoC → different bootloader → different key.
+
+Implication: recovering **either** key unlocks a whole product family. The TR
+key (our target) decrypts TR-6S + TR-8S; the Compact key would decrypt
+T-8 + J-6 + E-4.
+
+### AIRA Compact panel firmware is one shared codebase (plaintext ARM)
+
+All three Compact `App_Panel` images are plaintext ARM Cortex-M with an identical
+vector-table base. **T-8 and J-6 panels are 98.8% byte-identical** (260 differing
+bytes / 20,508 — mostly relocated pointers + product IDs), so the T-8 panel RE
+(below) applies to the J-6 essentially verbatim. The **E-4 panel** is a distinct
+build (~18% identical) but the same STM32/toolchain and — confirmed in Ghidra —
+**the same MIDI-over-UART command dispatcher**, with one addition: it handles
+`0xC0` **Program Change** (patch select for the voice unit) on top of the T-8's
+command set. So the MIDI-over-UART panel protocol is a **platform-wide Roland
+convention**, tweaked per product.
 
 ## Payload structure — RESOLVED (`dd001_m0c0a_up.bin`)
 
