@@ -51,14 +51,18 @@ Observed on the reference backup:
 
 | Tag | Header @ | Payload | Notes |
 | --- | -------- | ------- | ----- |
-| `SYS ` | `0x40` | 752 B | System params. **Same body as the firmware `init_param`** (`d8 0c 34 03 …`); contains the 32 `USER01…32` slot names at payload+~0x7C. |
+| `SYS ` | `0x40` | 752 B | System params — **decoded** (see "System record" below). Array of **1 record × 752 B**, byte-identical to the firmware `init_param` factory image. |
 | `PTN ` | `0x350` | 3,136,512 B | Array: **128 records × 24,504 B** (`0x5FB8`). Payload begins `count(u32)=128, record_size(u32)=0x5FB8`. |
 | `KIT ` | `0x2FDF70` | 167,936 B | Array: **128 records × 1,312 B** (`0x520`). Same `count,record_size` preamble. |
 | `SMPL` | `0x33FFD0` | 0 B | User samples; empty here (none loaded). `extra` ≈ 0x3300000 = the reserved sample region — accounts for the ~51 MB of zero padding to EOF. |
 | `FX  ` | — | — | Seen ×4; effects config. Not yet mapped. |
 
 Array sections self-describe with a `count,record_size` preamble, so the parser
-locates records generically.
+locates records generically. The "preamble" is not a separate structure: it is
+**record 0's own 16-byte header**, whose first two words happen to be `count`
+and `record_size` and whose `+0x08` field is the section token (below). That is
+why `128 × 0x5FB8` fills the `PTN ` payload exactly with nothing left over —
+confirmed for `SYS `, `PTN `, `KIT ` and `TONE`.
 
 ## Kit record (`KIT ` section)
 
@@ -364,7 +368,317 @@ diff (record motion on one parameter, save, diff), i.e. hardware.
 Exposed as `MotionWord` / `motion_lane_name()` / `Pattern::motion_word()` in
 `tr-format` and `MotionLanes` + `tr-studio motion <backup> <n> <var>` above it.
 
-FX (`FX  `) and SYS decode the same way from `Script.xml`.
+FX (`FX  `) decodes the same way from `Script.xml`.
+
+## System record (`SYS ` section)
+
+**Status: decoded.** Named from TR Editor's `Script.xml` (model path `fm.SYS.*`
+→ `structType sys`, whose four sub-structs are `sysGeneral`, `sysCategory`,
+`sysSound`, `sysMidi`) and checked against the reference v1.51 backup **and**
+the v2.00 firmware's factory image (see the `init_param` reconciliation below).
+
+### Framing — CONFIRMED
+
+`SYS ` is an ordinary array section holding **one** record; it does **not** skip
+the 16-byte record header.
+
+```text
+payload+0x00  u32 count       = 1
+payload+0x04  u32 record_size = 0x2F0 (752)      <- the whole payload
+payload+0x08  8 B  section token  d8 0c 34 03 1c 2a a9 63
+payload+0x10  736 B parameter body
+```
+
+Evidence: the declared `record_size` equals the declared payload size, and the
+body decodes correctly *only* from `payload+0x10` — the `int1x7` field
+`LCD Contrast` (schema offset 0) reads its default `4` there and every following
+field falls into place (below). At `payload+0x08` or `+0x0C` nothing lines up.
+
+### Body map — CONFIRMED
+
+Sub-structs are concatenated in schema order, each sized by accumulating
+`schema_value_size()` over its `<value>` list. The four accumulated sizes
+predict three boundaries, and **all three land on an independently visible
+landmark in the data**:
+
+| Body range | Sub-struct | Size | Boundary evidence |
+| ---------- | ---------- | ---- | ----------------- |
+| `0x000`–`0x05B` | `sysGeneral` | 92 | end = first byte of `USER01` |
+| `0x05C`–`0x25B` | `sysCategory` | 512 | 32 × 16; end = last byte of `USER32` |
+| `0x25C`–`0x2A7` | `sysSound` | 76 | end = start of `sysMidi` (next row) |
+| `0x2A8`–`0x2CD` | `sysMidi` (named) | 38 | `Pattern Ch` = 9 and `RX FA FC` = 1, its two non-zero defaults, both land |
+| `0x2CE`–`0x2DF` | `sysMidi` reserve tail | 18 | all zero |
+
+`92 + 512 + 76 + 38 + 18 = 736` — the body is fully accounted for.
+
+(At `payload+0x08` `LCD Contrast` would read `0xD8` and at `+0x0C` `0x1C`, both
+far outside its `0,9` range — the body base is not merely plausible at `+0x10`,
+the alternatives are excluded.)
+
+**Aggregate check:** of the **120** named fields, the **88** that carry a
+numeric `<range>` are **all in range** (zero violations), and **68** sit exactly
+on their `Script.xml` `<default>`. Nothing here is a statistical guess: the
+map is derived, then every derived offset is checked.
+
+### `sysGeneral` (body `0x000`) — CONFIRMED
+
+41 named fields in 42 bytes; 40 read their schema default.
+
+| Off | Field | Type | Range | Def | Observed |
+| --- | ----- | ---- | ----- | --- | -------- |
+| `+0x00` | LCD Contrast | u8 | 0–9 | 4 | 4 |
+| `+0x01` | LED Bright | u8 | 0–9 | 7 | 7 |
+| `+0x02` | LED Off Bright | u8 | 0–9 | 2 | 2 |
+| `+0x03` | SliderLED | u8 | 0–1 | 0 | 0 |
+| `+0x04` | SliderColorSource | u8 | 0–1 | 0 | 0 |
+| `+0x05` | Auto Off | u8 | 0–2 | 0 | 0 |
+| `+0x06` | Knob Mode | u8 | 0–1 | 0 | 0 |
+| `+0x07` | WeakBeat | u8 | 0–1 | 0 | 0 |
+| `+0x08` | LED Demo | u8 | 0–10 | 5 | 5 |
+| `+0x09` | Auto Save | u8 | 0–1 | 0 | 0 |
+| `+0x0A` | TempoSrc | u8 | 0–1 | 0 | 0 |
+| `+0x0B` | TempoSync | u8 | 0–3 | 0 | 0 |
+| `+0x0C` | **Tempo** | u16 LE | 400–3000 | 1250 | **1250** |
+| `+0x0E` | Sync Out | u8 | 0–1 | 1 | 1 |
+| `+0x0F` | Shuffle | u8 | 0–1 | 0 | 0 |
+| `+0x10` | SEQ Mode | u8 | 0–1 | 0 | 0 |
+| `+0x11` | ManualMode | u8 | 0–2 | 1 | 1 |
+| `+0x12` | KitSelect | u8 | 0–1 | 1 | 1 |
+| `+0x13` | M.Trig | u8 | 0–1 | 1 | 1 |
+| `+0x14` | USB Mode | u8 | 0–1 | 0 | 0 |
+| `+0x15` | USB Audio | u8 | 0–1 | 0 | **1** |
+| `+0x16` | SCAT TRIG | u8 | 0–2 | 0 | 0 |
+| `+0x17` | HH Link | u8 | 0–1 | 0 | 0 |
+| `+0x18` | Start Ptn | u8 | 0–128 | 1 | 1 |
+| `+0x19` | Start Kit | u8 | 0–128 | 1 | 1 |
+| `+0x1A` | Last Ptn | u8 | 0–127 | 0 | 0 |
+| `+0x1B` | Last Kit | u8 | 0–127 | 0 | 0 |
+| `+0x1C` | Ptn Lock | u8 | 0–1 | 0 | 0 |
+| `+0x1D`–`+0x27` | **Slider Color** BD SD LT MT HT RS HC CH OH CC RC | u8×11 | 0–11 | 0…10 | 0…10 |
+| `+0x28` | Inst Pad | u8 | 0–3 | 1 | 1 |
+| `+0x29` | Trig Adjust | u8 | 0–12 | 0 | 0 |
+| `+0x2A`–`+0x5B` | RESERVE100/101 + RESERVE200–211 | — | — | 0 | `07 01`, then `128, 0×11` |
+
+Two independent offset anchors, either of which alone would pin the block:
+
+- **`Tempo` = 1250** — a 12-bit value reading its *exact* non-trivial default as
+  an LE `u16` at the two bytes the `int4x4` sizing rule predicts. This also
+  re-validates that rule (`ceil(bits(3000)/7)` = 2) on a struct other than
+  `ptnCmn`. Tempo is stored as **BPM × 10**, same as `ptnCmn.TEMPO`.
+- **The `Slider Color` ramp `0,1,2,…,10`** — 11 consecutive bytes counting up,
+  exactly the schema's per-instrument defaults, in `INST_TRACKS` panel order.
+  A one-byte drift would break it.
+
+`RESERVE100`/`RESERVE101`/`RESERVE200` are non-zero (`7`, `1`, `128`).
+**Unknown** what they hold — presumably TR-6S/firmware fields that postdate
+TR Editor's schema. They are *not* a sign of drift: they sit after every named
+field, and the named fields all validate.
+
+### `sysCategory` (body `0x05C`) — CONFIRMED
+
+32 × 16-byte user category names, space-padded; factory content `USER01`…
+`USER32`. The schema entry is the `stringNx7` **`CATEG_NAMEnnA`**, whose length
+comes from its `<size>10</size>` — read as **hexadecimal**, i.e. 16 bytes. Two
+independent confirmations: consecutive `<address>` values step by `0x10`, and
+`kitCmn.NAMEA`, `ptnCmn.NAMEA` and `toneCmn.NAMEA` all carry the same
+`<size>10</size>` while being *known* 16-byte fields. So the `N` in `stringNx7`
+is `<size>` parsed as hex — a refinement of `schema_value_size()`'s current
+"assume 16".
+
+Note the same alias trap as `ptnCmn.NAME`/`NAMEA`: each name also appears as an
+`int1x7` **`CATEG_NAMEnn`** carrying *sixteen* `<address>` children (one per
+character). A `<value>` with multiple `<address>` children is a per-element
+alias — **skip it** when accumulating offsets, or every subsequent field shifts.
+
+### `sysSound` (body `0x25C`) — CONFIRMED
+
+| Off | Field | Range | Def | Observed |
+| --- | ----- | ----- | --- | -------- |
+| `+0x00` | Local Sw | 0–2 | 1 | 1 |
+| `+0x01` | Mix Out | 0–1 | 1 | 0 |
+| `+0x02`–`+0x07` | Assign 1…Assign 6 | 0–2 | 1 | 0 |
+| `+0x08` | ExtInMode | 0–1 | 0 | 0 |
+| `+0x09`–`+0x4B` | RESERVE000–002, RESERVE100–115 | — | 0 | 0 |
+
+Seven of the nine differ from TR Editor's default. That is expected rather than
+alarming: `Assign 1`–`6` are the TR-8S's **individual output** routings, which a
+TR-6S has no jacks for, and these are the *device's* factory values (the same
+bytes ship in the TR-6S firmware image — see below), not the editor's. Offset
+confirmation for this block comes from its two boundaries, not from its values.
+
+### `sysMidi` (body `0x2A8`) — CONFIRMED
+
+| Off | Field | Range | Def | Observed |
+| --- | ----- | ----- | --- | -------- |
+| `+0x00` | Device ID | 0–15 | 0 | 0 |
+| `+0x01` | Omni Mode | 0–1 | 0 | 0 |
+| `+0x02` | **Pattern Ch** | 0–15 | 9 | **9** |
+| `+0x03` | Kit Ch | 0–15 | 0 | 0 |
+| `+0x04`–`+0x1A` | **Inst Note00…22** | 0–128 | 128 | see below |
+| `+0x1B` | USB MIDI Thru | 0–1 | 1 | 1 |
+| `+0x1C` | Soft Thru | 0–1 | 1 | 1 |
+| `+0x1D`–`+0x23` | TX Prog Chg / Bank Sel / Edit Data / Nudge / Shuffle, RX Prog Chg / Bank Sel | 0–1 | 0 | 0 |
+| `+0x24` | RX Edit Data | 0–1 | 0 | 0 |
+| `+0x25` | **RX FA FC** | 0–1 | 1 | **1** |
+| `+0x26`… | RESERVE0, RESERVE100… | — | 0 | 0 (truncated) |
+
+The block is bracketed by its two non-zero defaults: `Pattern Ch` = 9 (MIDI
+channel 10, the GM drum channel) at `+0x02`, and `RX FA FC` = 1 at `+0x25` after
+exactly eight zero switch bytes. Both land, so the 23-byte note array between
+them is correctly sized.
+
+**The note map.** The 23 `Inst NoteNN` slots read:
+
+```
+slot  00 01 02 03 04 05 06 07 08 09 10 | 11 12 13 14 15 16 17 18 19 20 21 22
+note  36 38 43 39 42 46 -- -- -- -- -- | 35 40 41 54 44 55 -- -- -- -- -- --
+```
+
+Slots 0–10 = the 11 instruments in `INST_TRACKS` order is **confirmed**: on a
+TR-6S the first six carry the GM drum notes of exactly its six voices
+(36 BD, 38 SD, 43 low tom, 39 hand clap, 42 closed HH, 46 open HH) and the five
+TR-8S-only voices read `128` = unassigned.
+
+Slots 11–21 being the same instruments' **alternate**-tone notes is
+**inferred**, not confirmed: the schema names them only `Inst Note11`… . The
+inference is that slots 11–16 hold `35 40 41 54 44 55` — the GM "second" sound
+of each of the same six voices (35 acoustic BD, 40 electric snare, 41 low floor
+tom, 54 tambourine, 44 pedal HH, 55 splash) — with 17–21 unassigned, and it
+dovetails with the step word's ALTERNATE flag. **Slot 22 is unaccounted for.**
+Settling both needs a controlled hardware diff (change one ALT note, save,
+diff). `SysMidi::inst_note_alt()` is marked inferred in the crate.
+
+### The truncated tail — partly UNKNOWN
+
+Body `0x2CE`–`0x2DF` (18 bytes) is zero. The schema declares `sysMidi`'s
+reserve tail as `RESERVE0` (`int4x4`) + `RESERVE100`–`RESERVE107` (8 ×
+`int8x4`) = 34–35 bytes, but the 752-byte record only provides 18. **Observed:**
+the record stops mid-reserve. **Unknown:** whether the firmware truncates the
+struct, or the schema over-declares for a model/version other than this one.
+It affects nothing decodable — the bytes are zero in both corpora — but a writer
+must not assume the schema's declared length. Exposed as `Sys::reserve_tail()`.
+
+Implemented as `sys::Sys` / `SysGeneral` / `SysSound` / `SysMidi` +
+`Backup::sys()` in `crates/tr-format/src/sys.rs`.
+
+## Reconciling `SYS ` with the firmware `init_param`
+
+The prior note that the `SYS ` payload has "the same body as the firmware
+`init_param`" turns out to understate it, and the mechanism was not what it
+looked like.
+
+### `dd001_init_param.bin` is LZSS-compressed — CONFIRMED
+
+Searching the firmware blob for the `SYS ` payload bytes finds **nothing**: the
+data is there, but literal runs are broken up by short control sequences. It is
+**classic LZSS** (Okumura's `lzss.c`, the ubiquitous embedded variant):
+
+| Parameter | Value |
+| --------- | ----- |
+| Ring buffer | 4096 bytes, pre-filled `0x00` |
+| Initial write position | `4096 − 18` = `0xFEE` |
+| Control byte | 1 flag bit per token, **LSB first**; `1` = literal, `0` = match |
+| Match token | 2 bytes: `offset` = `b0` OR'd with `(b1 & 0xF0) << 4` (12 bits); `length` = `(b1 & 0x0F) + 3` |
+
+Decoding a `0x6B858`-byte section from file offset `0x30` consumes it exactly
+and yields **exactly `0x33FFD0` bytes** — the value the `init_param` header
+declares. (The three sections are byte-identical *compressed*, so decoding all
+three is one confirmation, not three.) Three checks, none of which a wrong codec
+survives:
+
+1. The decoder consumes the compressed section to the last byte and lands on the
+   declared output length to the byte.
+2. The output starts with the `TR6S` magic and a container whose chunk directory
+   sits at the same offsets, with the same record sizes, as a real SD backup.
+3. Its `SYS ` chunk is **byte-identical** to the reference backup's — 768 bytes
+   of independently-sourced known plaintext reproduced exactly.
+
+**This corrects `docs/firmware-format.md`** (not edited here, to avoid a merge
+conflict) on two points:
+
+1. The header field at `0x14` documented as `load_addr[3] = 0x0033FFD0` is the
+   **decompressed size**, not a load address — it equals the decode output
+   length exactly. `section_size[3] = 0x0006B858` is the *compressed* size.
+2. The "ASCII tags embedded in binary tables / `uint16` runs at stride `0x12`"
+   description of the section content was an artifact of reading compressed
+   data. The real content is plain.
+
+### What the firmware actually carries — CONFIRMED
+
+Each decompressed section is a **complete factory-default TR-6S backup image**,
+in the same container this document describes:
+
+| Tag | Header @ | Payload |
+| --- | -------- | ------- |
+| `SYS ` | `0x40` | 752 B |
+| `PTN ` | `0x350` | 3,136,512 B |
+| `KIT ` | `0x2FDF70` | 167,936 B |
+| `TONE` | `0x326F90` | 36,864 B |
+
+Same magic, same chunk offsets, same record sizes as the SD-card backup. The
+image simply ends where the backup's `SMPL` chunk begins (`0x33FFD0`) — the
+factory ships no user samples. So `tr-format` parses the decompressed firmware
+blob with no changes at all, and the project gains a **second, factory-clean
+corpus** for every section, obtained without touching the encrypted `App1_Main`.
+
+### The reconciliation itself — CONFIRMED
+
+| Section | v2.00 factory vs. v1.51 backup |
+| ------- | ------------------------------ |
+| `SYS ` (header + 752 B payload) | **byte-identical, 0 differing bytes** |
+| `TONE` (36,864 B) | **byte-identical** |
+| `KIT ` | 97.8 % identical (user-edited kits differ) |
+| `PTN ` | 97.5 % identical (user-edited patterns differ) |
+| File header `0x00`–`0x1F`, `0x2A`–`0x3B` | identical |
+| File header `0x20`–`0x29`, `0x3C`–`0x3F` | all 11 differing bytes fall in these two windows |
+
+That last row is a free bound on the **file-header checksum**: whatever the
+`0x20` region computes over, only those 14 bytes react to a change of contents.
+
+So the answer to "where does the shared body start, how long is it, does v2.00
+agree with v1.51" is: **the whole `SYS ` chunk, all 768 bytes including its
+header, identical across both firmware generations.** Every field in the map
+above is therefore corroborated on both corpora.
+
+**The honest caveat.** Byte-identity means the reference backup's system
+settings were *never changed from factory* — so this is one value sample seen
+twice, not two independent samples. It proves the layout is stable v1.51→v2.00
+and that the observed values are Roland's factory init (which is why `USB Audio`
+and the `sysSound` block differ from TR Editor's defaults: those are the
+*editor's* defaults, which are not the device's). It does **not** substitute for
+a save-change-save diff, which is still what would let us watch a field move.
+
+### Bonus: the `+0x08` token *co-varies* with section content (weak, confounded)
+
+Falling out of the same comparison, and relevant to the `+0x08` field section
+below:
+
+| Section | Content identical v1.51↔v2.00? | Token identical? |
+| ------- | ------------------ | ---------------- |
+| `SYS ` | yes | **yes** |
+| `TONE` | yes | **yes** |
+| `KIT ` | no | **no** |
+| `PTN ` | no | **no** |
+
+Tempting to read this as "the token is a content digest" — but the evidence is
+**weaker than it looks, and it is confounded**, so this is a lead to test, not a
+finding:
+
+- **The `yes → yes` rows are near-tautological.** The token lives *inside* the
+  section payload (record 0's `+0x08`). If two sections are byte-identical, every
+  byte including the token is identical by definition — that says nothing about
+  what computes it.
+- **The `no → no` rows don't isolate a digest.** Between two firmware builds a
+  section that changed content changed in *many* ways at once; the token
+  differing is equally consistent with it being an independent build/version
+  stamp that got regenerated, not a hash *of* the content.
+
+So n is effectively closer to 2 than 4, and even those 2 don't distinguish
+"content digest" from "field that happens to change alongside content." The
+discriminating test is the one this corpus can't do: **change a single content
+byte, hold everything else, and see whether the token moves** — a
+save-change-save diff on hardware. Until then it stays flagged, not adopted.
+Prior sweeps already ruled out plain CRC-32/64 and MD5/SHA1/SHA256.
 
 ## The `+0x08` field — NOT a per-record checksum (2026-08-07)
 
@@ -379,7 +693,14 @@ Consequences:
 
 - **Editing records ≥ 1 is checksum-free** — the field is already zero and stays
   zero, so length-preserving edits to any user kit/pattern slot need no
-  recomputation. This unblocks `tr-studio` writes to user slots.
+  recomputation. This unblocks `tr-studio` writes to user slots. **Caveat (flag,
+  not a reversal):** the cross-version comparison above is *consistent with* the
+  record-0 token being a digest over the whole section payload (records ≥ 1
+  included), which would make it need recomputation — but that evidence is
+  confounded (see the "Bonus" note) and does not distinguish a digest from a
+  build stamp. "Checksum-free for records ≥ 1" stands as the working position;
+  the open risk is only that editing slot 0's neighbours might require updating
+  slot 0's token, and that needs a hardware save-change-save diff to settle.
 - The record-0 token's algorithm is unresolved: it is **not** a plain
   CRC-32/64, MD5/SHA1/SHA256 (first/last 8) of the section, record, or backup
   (all swept and ruled out). Likely keyed/Roland-specific or device-generated.
@@ -420,9 +741,21 @@ Next (record internals — the RE that turns bytes into editable fields):
    pattern sets it). Both want the "save two patterns differing by one
    step/param, then diff" technique — `fw-analyze diff --block`/byte-diff
    pinpoints the changed field — which needs the device.
-3. **`SYS ` ↔ `init_param`** — reconcile the shared system-param body with the
-   already-mapped `init_param` structure (`docs/firmware-format.md`).
-4. **`FX  `** and the file-header checksum (`0x20` region).
+3. **`SYS ` ↔ `init_param`** — **done.** The section is decoded and the two
+   corpora reconcile byte-for-byte. Follow-ups it opened:
+   - Add the **LZSS decoder** to `fw-extract` (parameters documented above, ~20
+     lines) so the factory image is a first-class corpus instead of a one-off
+     script. It belongs there, not in `tr-format`, which stays firmware-free.
+   - Fold the `init_param` corrections (the `0x14` field is the **decompressed
+     size**, not a load address; the "indexed parameter tables" reading was an
+     artifact of compressed data) into `docs/firmware-format.md`.
+   - Re-open the **`+0x08` section token** with the second corpus as a test
+     vector — it now looks content-derived.
+   - Still needing hardware: `sysMidi` slots 11–22 (the inferred ALT note map)
+     and whether the 18-byte truncated `sysMidi` reserve tail is deliberate.
+4. **`FX  `** and the file-header checksum (`0x20` region — every byte that
+   reacts to a content change lies in `0x20`–`0x29` or `0x3C`–`0x3F`, which
+   bounds the checksum fields to those 14 bytes).
 
 Then the [`tr-librarian`](../crates/tr-format) layer: browse/organize/dedupe,
 JSON/TOML export-import, SD-card layout — the FOSS alternative to Roland Cloud.

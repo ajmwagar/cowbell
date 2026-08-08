@@ -453,21 +453,31 @@ the one component readable today.
 | ------ | ----- | ----- |
 | `0x00` | `magic[4]` | `"INIT"` |
 | `0x04` | `total_size` | `0x00150000` (1,376,256) — exactly the file size |
-| `0x08` | `section_size[3]` | `0x0006B858` ×3 (all equal) |
-| `0x14` | `load_addr[3]` | `0x0033FFD0` ×3 (all equal) |
+| `0x08` | `compressed_size[3]` | `0x0006B858` ×3 (all equal) |
+| `0x14` | `decompressed_size[3]` | `0x0033FFD0` ×3 (all equal) — **the LZSS output length, not a load address** |
 | `0x20` | `reserved[4]` | zero |
-| `0x30` | payload | 3 × `0x6B858` sections |
+| `0x30` | payload | 3 × `0x6B858` **LZSS-compressed** sections |
 | `0x142938` | tail | 54,984 B zero pad + three LE `0x0006B858` footer words |
 
 **The three sections are byte-identical** (verified by SHA-256:
-`76a160f2aeb0347d001c1dfdad1a04f1…`). Identical sizes, identical target
-addresses, identical content ⇒ this is **triple redundancy** for
-wear-levelling / integrity fallback, *not* three distinct parameter banks.
+`76a160f2aeb0347d001c1dfdad1a04f1…`) ⇒ **triple redundancy** for
+wear-levelling / integrity fallback, not three distinct banks.
 
-Section content: ASCII tags embedded in binary tables, with prominent runs of
-LE `uint16` ascending at a constant stride of `0x12` (e.g. `df11 df23 df35
-df47`), each run repeating 11× per copy — consistent with indexed
-parameter/offset tables.
+**Each section is LZSS-compressed and decompresses to a full factory-default
+TR-6S backup image** (Okumura `lzss.c`: 4096-byte ring pre-filled `0x00`, initial
+pos `0xFEE`, LSB-first flags with `1`=literal, 2-byte match = 12-bit offset +
+`(b1 & 0xF)+3` length). Decoding from file offset `0x30` consumes the `0x6B858`
+section exactly and emits exactly `0x33FFD0` bytes — a container with `TR6S`
+magic whose `SYS `/`PTN `/`KIT `/`TONE` chunks sit at backup offsets, and whose
+`SYS ` chunk is **byte-identical** to a real SD backup's. Independently
+reproduced (see `docs/tr-format.md`, "Reconciling `SYS ` with `init_param`").
+
+This **corrects two earlier readings**: the `0x14` field is the *decompressed
+size*, not a load address; and the "ASCII tags in binary tables / ascending
+`uint16` at stride `0x12`" description was an **artifact of reading LZSS match
+tokens as data** — the payload is not a table, it is a compressed backup. The
+practical win: `init_param` is a free **second corpus** — the factory-default
+values for every backup section — that `tr-format` parses once decompressed.
 
 Imported into the Ghidra project (`tr6s_ghidra`) as **`DATA:LE:64:default`**
 with the header struct `TR6S_InitParamHeader` applied and section boundaries

@@ -34,6 +34,8 @@
 //! delay/reverb/MFX planes). Still open: per-step probability and part of the
 //! motion flags byte — see `docs/tr-format.md`.
 
+pub mod sys;
+
 use anyhow::{bail, Context, Result};
 
 /// The TR-6S / TR-8S backup file magic.
