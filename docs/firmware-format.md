@@ -324,6 +324,46 @@ Practical implications:
 3. Any plaintext obtained for one unit (e.g. a future NOR dump) is a
    **known-plaintext oracle** for the shared blocks of the other.
 
+### The key is stable across firmware versions (2026-08-08)
+
+With three TR-8S update versions on hand (**v1.05, v1.13, v3.00** — spanning
+2018→2023) the "recover once, decrypt everything" claim is now tested across
+*time*, not just across models. `fw-analyze blockmode` on each `App1_Main`:
+
+| Image | Payload | ECB dup @8 | Fill block `6B4C9A85…` |
+| ----- | ------- | ---------- | ---------------------- |
+| TR-8S v1.05 | 2,121,552 | 26.68 % | ×9,329 |
+| TR-8S v1.13 | 2,139,600 | 26.81 % | ×9,308 |
+| TR-8S v3.00 | 2,535,360 | 29.03 % | ×10,306 |
+| TR-6S v2.00 | 2,529,168 | 29.89 % | ×8,420 |
+
+The **same fill block `6B4C9A852C732831`** — `E(K, padding)` — appears in every
+version and both models, and so do the next five most-frequent blocks
+(`cf5ee0c2…`, `97e1dea2…`, `445d8d01…`, `93b181af…`). Two different keys
+producing the same `E(K, pad)` is a 2⁻⁶⁴ coincidence; that it repeats for six
+distinct blocks across four images is conclusive: **one key, unchanged from
+v1.05 through v3.00 and shared TR-6S↔TR-8S.** Shared *unique* blocks track the
+same story — consecutive versions overlap ~46 % (v1.05∩v1.13 = 88,817), and even
+v1.05∩v3.00 (five years apart) share 72,125; the cross-model v3.00∩TR-6S-v2.00 =
+66,232 reproduces the earlier finding.
+
+This settles the "would older firmware help?" question empirically:
+
+- **Not a path to the key.** Every version is ECB under the *same* key; more
+  same-key ciphertext never lowers the brute-force cost. No version shipped the
+  main app unencrypted (all 27–30 % ECB-duplicated).
+- **It is decryption insurance.** Dump the key once from *any* unit or version's
+  NOR and it decrypts every version of both products; the cross-version shared
+  blocks then let one decrypted image reveal the unchanged blocks of all the
+  others for free. Collecting versions is worthwhile *after* the key, not before.
+- Reproduce: `fw-analyze blockmode <m0c0a> --offset 96 --len <payloadlen>`.
+
+Note this is `fw-analyze`, not Ghidra: the images are ciphertext, so there is
+nothing to disassemble until the key is out (see the Ghidra negative-space note
+above). A *plaintext* cross-version diff is possible via the decompressed
+`init_param` — useful for tracking data-format evolution, but that feeds
+`tr-format`, not the crypto.
+
 **What this establishes about the SoC — the main chip is BMC.** The shared
 platform (key, container, CRC-32, load map `0x60000000`,
 `init_param`@`0x0033FFD0`, substantial shared content) means TR-6S and TR-8S

@@ -12,14 +12,23 @@ protocol**, surfaced two independent ways:
 1. **`compuphonic/TR-8S-SysEx`** (GitHub) — MIDI-Monitor captures of the Roland
    **ARIA** web sound library (<https://aira.roland.com/soundlibrary-cat/tr-8s/>)
    transferring kits/patterns to a TR-8S, plus a JS reference implementation that
-   reads/writes device memory. The repo has **no license (all rights reserved)**,
-   so we take only the *facts* (addresses, message layout, ID ranges — not
-   copyrightable, and re-observable from any MIDI capture) and **do not vendor its
-   code or capture files.** Credit to that repo for surfacing them.
+   reads/writes device memory.
 2. **TR Editor** (`cowbell-uqk`) implements the same primitives
    (`FKoaSendRq1`/`FKoaSendDt1`/`FKoaRequestRq1Dt1`) from the other direction.
 
 Two independent sources agreeing is exactly the corroboration this project wants.
+
+**On copyright.** What we take here is **Roland's protocol** — a functional
+interface (message layout, device addresses, ID ranges), reverse-engineered.
+Nobody who *documents* an API owns it: functional interfaces and facts are not
+copyrightable (17 U.S.C. §102(b), *Baker v. Selden*), and even the reuse of API
+declarations is fair use (*Google v. Oracle*, 2021). So the `compuphonic` repo's
+lack of a license does not restrict the **facts** it surfaces — they are Roland's
+API, not that author's creative work, and are re-observable from any MIDI
+capture. What copyright *would* protect is that author's specific **expression** —
+their JS source, prose, and capture files — so we credit the repo and **do not
+vendor any of its code or files**; a clean-room implementation from the facts is
+unencumbered.
 
 ## The message format — Roland RQ1 / DT1
 
