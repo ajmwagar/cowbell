@@ -222,6 +222,27 @@ So any pad must have period dividing 8. Each survivor dies individually:
 **No keystream or XOR pad of any period explains the data.** ECB over a genuine
 64-bit block cipher stands, and `P ⊕ C` yields nothing reusable.
 
+#### Is it a stream cipher? No — the three hypotheses, each killed on a measurement
+
+"Have we actually *ruled out* a stream cipher?" is the right question, because a
+stream cipher is the one thing that would make the XOR-out-the-padding attack
+work. There are exactly three stream/additive hypotheses, and each fails on a
+signature that is the *opposite* of what we observe:
+
+| Hypothesis | What it would produce | Measured | Verdict |
+| ---------- | --------------------- | -------- | ------- |
+| **1. Non-repeating keystream** (a proper stream cipher, CTR, OFB) | identical plaintext at different offsets → *different* ciphertext, so block repeats are birthday-only: **~2.7 × 10⁻⁹** expected collisions among 316k blocks | **29.89%** duplicate blocks | **ruled out** — 30% ≠ 0% |
+| **2. Repeating keystream / XOR pad, period > 8** | repeats only at offsets congruent mod `P`, so every gap is a multiple of `P` | gcd of the 8,420 gaps = **8**; 7,165/8,419 gaps not even multiples of 16 | **ruled out** — period must divide 8 |
+| **3. Period-8 XOR pad** (= `C = P ⊕ keystream`, the exact attack scenario) | XOR the pad out → recover plaintext; entropy drops toward the plaintext's | plaintext firmware (App_Panel) is **6.72/8**; XOR-out gives **7.94/8** (unchanged from ciphertext) | **ruled out** — no plaintext recovered |
+
+The three run in `scratchpad`-style checks over the real TR-6S `App1_Main`; a
+stream cipher and ECB give qualitatively opposite results on each, and every one
+lands on ECB. Caveat: this is ciphertext-only statistical inference — final
+certainty (and the algorithm's identity) comes with the NOR dump — but it is as
+strong as ciphertext analysis gets, and it is *why* the padding-XOR shortcut
+cannot apply here: the stream-cipher conditions it needs are measured to be
+absent.
+
 Reproduce with:
 
 ```
