@@ -1,0 +1,33 @@
+[package]
+name = "tr-sysex"
+description = "Clean-room reader/writer for the Roland TR-6S/TR-8S device SysEx protocol (RQ1/DT1 read/write of live device memory over USB-MIDI). Plaintext user-data plane only — no firmware, no decryption. A FOSS alternative to Roland's TR-EDITOR device I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tr_sysex"
+path = "src/lib.rs"
+
+[features]
+# `usb` pulls in a `midir` adapter implementing `MidiPort` against real
+# hardware. It is OFF by default: the default build and `cargo test` need no
+# `midir` and no device — the protocol is exercised entirely from byte-stream
+# fixtures. See `src/midir_port.rs`.
+default = []
+usb = ["dep:midir"]
+
+[dependencies]
+anyhow.workspace = true
+
+# Optional real-hardware transport. Only compiled with `--features usb`.
+midir = { version = "0.11", optional = true }
+
+# NOTE (follow-up): the eventual device-field -> typed-model mapping will add
+#   tr-format = { path = "../tr-format" }
+# to decode DT1 payloads into tr-format's Kit/Pattern/Sys records. It is left
+# out of the first cut on purpose (see crate docs "Not yet done"), so this crate
+# builds standalone with no cross-crate coupling to the byte-format layer.
