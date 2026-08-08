@@ -597,9 +597,29 @@ path — likely pushed by the BMC over the same UART).
       the *ciphertext* body of the encrypted images matches no header field, at
       any range (TR-6S body → `0x25F6CEE3` ≠ `0x46DE65B3`; T-8 App_Main body →
       `0x015424F4` ≠ `0x0BF49F16`). So the bootloader flow is **decrypt →
-      CRC-32 → compare**. Practical payoff: this is a **decryption oracle** —
-      the correct key/cipher is the one whose output CRC-32 equals the header
-      field, so key-recovery attempts self-validate with no plaintext eyeballing.
+      CRC-32 → compare**.
+- [x] **Exact body range pinned (re-verified 2026-08-08).** `zlib.crc32(body)`
+      with `body = image[H : H + plen]`, where `H` is the header size
+      (**`0x40`** for the compact 8-char-name layout, **`0x60`** for `App1_Main`)
+      and `plen` is the payload-length field (`0x24` compact / `0x44` App1_Main).
+      Confirmed on the plaintext App_Panel: `crc32(DD010_pnl[0x40:0x40+0x5034]) =
+      0x53C790FB`, matching its `0x2C` field, via both `zlib` and `fw-analyze
+      checksum`. **Ready verifier for key recovery:** the correct TR-6S
+      decryption is the one where `crc32(plain[0x60:0x60+plen]) == 0x46DE65B3`.
+
+  **What this oracle is — and is not.** It is a *self-validating decryption
+  oracle*: any candidate (key, cipher) is confirmed instantly — decrypt, CRC-32,
+  compare — with no plaintext eyeballing, and it lets cipher hypotheses be tested
+  cheaply. It **disambiguates the DES-56 long-shot**: a single known-plaintext
+  block (the padding → fill pair) can yield a few spurious DES keys from a
+  cracker, and the whole-image CRC-32 rejects all but the true key
+  (`2⁻³²` false-accept). But it is a **verifier, not a shortcut** — it says *when*
+  you have won, not *how*, and does not shrink the keyspace. CRC-32 is 32 linear
+  bits over ~20 M plaintext bits (no plaintext reconstruction), it is over
+  plaintext while ECB is non-linear (no computable ciphertext-side handle, so you
+  must decrypt first), and it is not a queryable padding-oracle-style leak. So it
+  makes DES-56 clean and unambiguous, but a perfect verifier over an unsearchable
+  128-bit keyspace still cannot open the image.
 - [ ] Is the image **cryptographically signed** (RSA/ECDSA)? No distinct
       fixed-size signature block is visible; the plaintext trailer is build
       metadata, not a signature. Encryption is confirmed, signing is not — and
