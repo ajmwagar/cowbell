@@ -364,6 +364,49 @@ above). A *plaintext* cross-version diff is possible via the decompressed
 `init_param` — useful for tracking data-format evolution, but that feeds
 `tr-format`, not the crypto.
 
+### Structural mapping from cross-version diffs (no decryption)
+
+Because the key is stable, ECB makes the encrypted images *diffable*: identical
+plaintext → identical ciphertext block, so `fw-analyze diff --block 8 --app1
+--relocate` segments an image into regions that are unchanged, relocated, or
+genuinely new **without decrypting anything**. Same-*offset* comparison is nearly
+useless here (an update inserts bytes and shifts everything after), so the
+**relocation pass** anchors on blocks unique to both versions and finds the
+matched runs regardless of where they moved.
+
+**TR-6S v1.51 → v2.00** (payload +69,040 B): ~57 % of blocks are shared content,
+almost all *relocated* (only 2.7 % sit at the same offset). The shift plateaus
+increase monotonically with offset — `+384 → +528 → +13,312 → +17,024 → +37,648
+→ +66,832 → +68,720` — the fingerprint of content inserted at **several** points,
+each pushing everything after it further down. So it is a *pervasive* update, not
+a localised patch. The largest single unchanged region is a **64 KB block that
+relocated as a unit** (`0x1a5100 → 0x1b5610`), followed by a cluster of KB-scale
+runs all at `+66,832` in `0x1a2dd8..0x1da1f0` — a ~230 KB band of **static data**
+(tables/resources) that survived byte-for-byte and only moved.
+
+**TR-8S across versions** (same method): v1.05 → v1.13 (a minor bump) already
+touches code throughout — 55 % shared, shifts clustered at `+13–17 KB`, no
+localised patch. v1.13 → v3.00 (major) inserts one **~284 KB block** (`+284,024`
+dominates) plus distributed changes — a large feature/data addition.
+
+**Cross-model at matched feature generation.** Per the release history, **TR-8S
+v3.00 ≈ TR-6S v2.00** (same timeframe/features; the 8S runs one major version
+ahead). Diffing them: **42 % shared blocks** — the highest cross-model overlap —
+and the dominant shift is near-zero (`+672 B`), i.e. the shared content sits at
+almost the same offsets. That is the **shared BMC platform** (common libraries,
+tables, bootloader-adjacent code) laid out alike; the other ~58 % is
+product-specific (6 vs 11 voices, different sample sets/UI). This quantifies the
+platform-vs-product boundary the key-sharing already implied — now at aligned
+feature levels.
+
+**Limit, stated honestly:** block-diff reveals *where* content is identical,
+relocated, or changed — structure and update mechanics — not what any region
+*means*. "Static band = data, churned region = code" is inference from
+version-stability and contiguity, not proof, and nothing inside a *changed*
+region is recoverable while encrypted. What it does give: a segmentation, and a
+priority list of large version-stable regions that become the best
+known-plaintext targets the moment any plaintext arrives.
+
 **What this establishes about the SoC — the main chip is BMC.** The shared
 platform (key, container, CRC-32, load map `0x60000000`,
 `init_param`@`0x0033FFD0`, substantial shared content) means TR-6S and TR-8S
