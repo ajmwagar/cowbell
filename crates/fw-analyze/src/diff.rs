@@ -14,40 +14,86 @@
 //!   same-offset identical run across two images is the tell-tale of a
 //!   shared ECB key (see `docs/firmware-format.md`).
 //!
-//! Both modes honour `--offset O`, which starts the comparison at byte
-//! offset `O` in each image so callers can skip the ~96-byte plaintext
-//! header and compare only the encrypted body.
+//! Block mode also offers a **relocation pass** (`--relocate`): same-offset
+//! comparison misses content that survived but *moved* (an insertion shifts
+//! everything after it — the usual case across firmware versions). The
+//! relocation pass anchors on blocks unique to both images and coalesces them
+//! into matched runs, so a region that relocated as a unit appears as one run
+//! with a constant shift; the distribution of shifts is the update's
+//! fingerprint. See `docs/firmware-format.md`.
+//!
+//! Both modes honour `--offset O`, which starts the comparison at byte offset
+//! `O` in each image so callers can skip the plaintext header. For Roland
+//! `App1_Main` updates, `--app1` does this automatically, targeting each image's
+//! own encrypted-payload range (offset/len from its header) — so two versions
+//! of different sizes are compared body-to-body without hand-computing offsets.
 
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-pub fn run(a: &Path, b: &Path, max_runs: usize, block: usize, offset: u64) -> Result<()> {
+pub fn run(
+    a: &Path,
+    b: &Path,
+    max_runs: usize,
+    block: usize,
+    offset: u64,
+    app1: bool,
+    relocate: bool,
+) -> Result<()> {
     let da = fs::read(a).with_context(|| format!("reading {}", a.display()))?;
     let db = fs::read(b).with_context(|| format!("reading {}", b.display()))?;
 
-    let off = offset as usize;
-    // Slice off the leading header region; tolerate an offset past EOF.
-    let sa: &[u8] = if off <= da.len() { &da[off..] } else { &[] };
-    let sb: &[u8] = if off <= db.len() { &db[off..] } else { &[] };
+    // `--app1` targets each image's encrypted payload (its own offset/len);
+    // otherwise a single `--offset` applies to both and runs to EOF.
+    let (sa, sb, off_a, off_b): (&[u8], &[u8], usize, usize) = if app1 {
+        let ra = crate::image::app1_payload_range(&da)
+            .with_context(|| format!("{} is not an App1_Main image", a.display()))?;
+        let rb = crate::image::app1_payload_range(&db)
+            .with_context(|| format!("{} is not an App1_Main image", b.display()))?;
+        (&da[ra.0..ra.0 + ra.1], &db[rb.0..rb.0 + rb.1], ra.0, rb.0)
+    } else {
+        let off = offset as usize;
+        (
+            if off <= da.len() { &da[off..] } else { &[] },
+            if off <= db.len() { &db[off..] } else { &[] },
+            off,
+            off,
+        )
+    };
 
     if block == 0 {
-        byte_diff(a, b, &da, &db, off, max_runs);
+        anyhow::ensure!(!app1, "--app1 requires block mode (--block N)");
+        byte_diff(a, b, &da, &db, off_a, max_runs);
+        return Ok(());
+    }
+
+    anyhow::ensure!(block > 0, "block size must be > 0");
+    println!("# block-diff");
+    println!("#   a = {} ({} bytes)", a.display(), da.len());
+    println!("#   b = {} ({} bytes)", b.display(), db.len());
+    if app1 {
+        println!(
+            "#   block = {block}  app1 payload a=0x{off_a:x}..0x{:x} b=0x{off_b:x}..0x{:x}",
+            off_a + sa.len(),
+            off_b + sb.len()
+        );
     } else {
-        anyhow::ensure!(block > 0, "block size must be > 0");
-        println!("# block-diff");
-        println!("#   a = {} ({} bytes)", a.display(), da.len());
-        println!("#   b = {} ({} bytes)", b.display(), db.len());
-        println!("#   block = {block}  offset = 0x{off:x} ({off})");
-        if da.len() != db.len() {
-            println!(
-                "# NOTE: file sizes differ by {} bytes",
-                (da.len() as i64 - db.len() as i64).abs()
-            );
-        }
-        let m = block_diff(sa, sb, block, offset, max_runs);
-        m.print();
+        println!("#   block = {block}  offset = 0x{off_a:x} ({off_a})");
+    }
+    if sa.len() != sb.len() {
+        println!(
+            "# NOTE: analysed lengths differ by {} bytes",
+            (sa.len() as i64 - sb.len() as i64).abs()
+        );
+    }
+    // Same-offset metrics use A's base offset for reported run coordinates.
+    let m = block_diff(sa, sb, block, off_a as u64, max_runs);
+    m.print();
+    if relocate {
+        let r = relocation_diff(sa, sb, block, off_a as u64, max_runs);
+        r.print();
     }
     Ok(())
 }
@@ -360,6 +406,199 @@ pub fn block_diff(sa: &[u8], sb: &[u8], block: usize, offset: u64, max_runs: usi
     }
 }
 
+// --- Relocation analysis -----------------------------------------------------
+// Same-offset comparison (above) misses content that survived but MOVED — the
+// usual case across firmware versions, where an insertion shifts everything
+// after it. This anchors on blocks unique to both images (a 1:1 correspondence)
+// and coalesces them into contiguous matched runs, so a region that relocated as
+// a unit shows up as one run with a constant shift. The distribution of shifts
+// is itself the update's fingerprint: a single delta = one insertion point;
+// several increasing deltas = content inserted at several places (see
+// `docs/firmware-format.md`).
+
+/// A relocation of `blocks`-many anchor blocks by `delta` bytes (b_offset −
+/// a_offset). `delta == 0` means unchanged in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shift {
+    pub delta: i64,
+    pub blocks: usize,
+}
+
+/// A contiguous run of blocks byte-identical between the two images, at
+/// `a_start` in A and `b_start` in B (original file coordinates), `len` bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedRun {
+    pub a_start: usize,
+    pub b_start: usize,
+    pub len: usize,
+}
+
+impl MatchedRun {
+    pub fn delta(&self) -> i64 {
+        self.b_start as i64 - self.a_start as i64
+    }
+}
+
+/// What the relocation pass computes. `print()` renders it.
+#[derive(Debug, Clone)]
+pub struct RelocationDiff {
+    pub block_size: usize,
+    pub blocks_a: usize,
+    /// A-blocks whose value occurs anywhere in B (shared content, with repeats).
+    pub shared_block_instances: usize,
+    /// Blocks unique to *both* images — the 1:1 anchors used below.
+    pub anchor_blocks: usize,
+    /// Anchor blocks that did not move (`delta == 0`).
+    pub in_place_blocks: usize,
+    /// Relocation deltas by anchor-block count, most common first.
+    pub top_shifts: Vec<Shift>,
+    /// Largest contiguous matched runs, longest first, capped at `max_runs`.
+    pub top_runs: Vec<MatchedRun>,
+}
+
+impl RelocationDiff {
+    /// Shared content as a percentage of A's blocks (position-independent).
+    pub fn shared_ratio(&self) -> f64 {
+        if self.blocks_a == 0 {
+            0.0
+        } else {
+            self.shared_block_instances as f64 / self.blocks_a as f64 * 100.0
+        }
+    }
+
+    fn print(&self) {
+        println!("# -- relocation (content that moved across images) --");
+        println!(
+            "#   {:.1}% of a's blocks are shared content; {} unique-in-both anchor block(s), {} in place",
+            self.shared_ratio(),
+            self.anchor_blocks,
+            self.in_place_blocks
+        );
+        if self.top_shifts.is_empty() {
+            println!("#   (no unique-in-both anchors — images share too little)");
+            return;
+        }
+        println!("#   top relocation shifts (b_offset − a_offset):");
+        for s in &self.top_shifts {
+            println!(
+                "#     {:+} bytes  x{} block(s){}",
+                s.delta,
+                s.blocks,
+                if s.delta == 0 { "  (in place)" } else { "" }
+            );
+        }
+        println!("#   largest contiguous matched runs:");
+        for r in &self.top_runs {
+            println!(
+                "0x{:08x} -> 0x{:08x}  len {:<8} ({} block(s), moved {:+})",
+                r.a_start,
+                r.b_start,
+                r.len,
+                r.len / self.block_size,
+                r.delta()
+            );
+        }
+    }
+}
+
+/// Anchored relocation diff. `sa`/`sb` are the post-offset slices; `offset` is
+/// added back into reported coordinates. No I/O; unit-testable on synthetic
+/// data.
+pub fn relocation_diff(
+    sa: &[u8],
+    sb: &[u8],
+    block: usize,
+    offset: u64,
+    max_runs: usize,
+) -> RelocationDiff {
+    debug_assert!(block > 0);
+    let blocks_a = sa.len() / block;
+    let blocks_b = sb.len() / block;
+    let counts_a = block_counts(sa, blocks_a, block);
+    let counts_b = block_counts(sb, blocks_b, block);
+
+    let shared_block_instances = (0..blocks_a)
+        .filter(|&i| counts_b.contains_key(block_at(sa, i, block)))
+        .count();
+
+    // Anchors: blocks unique in B give a value→position map; keep those also
+    // unique in A, so each anchor is an unambiguous 1:1 (i, j) pair.
+    let mut pos_b: HashMap<&[u8], usize> = HashMap::with_capacity(counts_b.len());
+    for j in 0..blocks_b {
+        let v = block_at(sb, j, block);
+        if counts_b[v] == 1 {
+            pos_b.insert(v, j);
+        }
+    }
+    let mut anchors: Vec<(usize, usize)> = Vec::new();
+    for i in 0..blocks_a {
+        let v = block_at(sa, i, block);
+        if counts_a[v] == 1 {
+            if let Some(&j) = pos_b.get(v) {
+                anchors.push((i, j));
+            }
+        }
+    }
+
+    // Shift histogram (deltas in bytes).
+    let mut shift_counts: HashMap<i64, usize> = HashMap::new();
+    let mut in_place_blocks = 0usize;
+    for &(i, j) in &anchors {
+        let delta = (j as i64 - i as i64) * block as i64;
+        *shift_counts.entry(delta).or_insert(0) += 1;
+        if delta == 0 {
+            in_place_blocks += 1;
+        }
+    }
+    let mut top_shifts: Vec<Shift> = shift_counts
+        .into_iter()
+        .map(|(delta, blocks)| Shift { delta, blocks })
+        .collect();
+    top_shifts.sort_by(|a, b| b.blocks.cmp(&a.blocks).then(a.delta.cmp(&b.delta)));
+    top_shifts.truncate(8);
+
+    // Coalesce anchors into contiguous matched runs (i+1, j+1 both step).
+    anchors.sort_unstable();
+    let mut runs: Vec<MatchedRun> = Vec::new();
+    let mut iter = anchors.iter().copied();
+    if let Some((mut a0, mut b0)) = iter.next() {
+        let (mut ap, mut bp, mut len) = (a0, b0, 1usize);
+        for (i, j) in iter {
+            if i == ap + 1 && j == bp + 1 {
+                len += 1;
+            } else {
+                runs.push(MatchedRun {
+                    a_start: offset as usize + a0 * block,
+                    b_start: offset as usize + b0 * block,
+                    len: len * block,
+                });
+                a0 = i;
+                b0 = j;
+                len = 1;
+            }
+            ap = i;
+            bp = j;
+        }
+        runs.push(MatchedRun {
+            a_start: offset as usize + a0 * block,
+            b_start: offset as usize + b0 * block,
+            len: len * block,
+        });
+    }
+    runs.sort_by(|x, y| y.len.cmp(&x.len).then(x.a_start.cmp(&y.a_start)));
+    runs.truncate(max_runs);
+
+    RelocationDiff {
+        block_size: block,
+        blocks_a,
+        shared_block_instances,
+        anchor_blocks: anchors.len(),
+        in_place_blocks,
+        top_shifts,
+        top_runs: runs,
+    }
+}
+
 fn block_at(data: &[u8], i: usize, block: usize) -> &[u8] {
     &data[i * block..(i + 1) * block]
 }
@@ -498,6 +737,56 @@ mod tests {
         assert_eq!(m.common_blocks, 2);
         assert_eq!(m.positional_matches, 2);
         assert_eq!(m.longest_run.unwrap().len, 8);
+    }
+
+    #[test]
+    fn relocation_finds_a_shifted_run() {
+        // B is A with two new blocks (8,9) inserted at the front, so A's whole
+        // body relocates by +2 blocks. Same-offset diff would see ~nothing;
+        // relocation should see one +8-byte shift and one matched run.
+        let a = img(&[1, 2, 3, 4, 5]);
+        let b = img(&[8, 9, 1, 2, 3, 4, 5]);
+        let r = relocation_diff(&a, &b, BS, 0, 64);
+
+        assert_eq!(r.anchor_blocks, 5); // 1..=5 are unique in both
+        assert_eq!(r.in_place_blocks, 0);
+        assert_eq!(r.top_shifts.len(), 1);
+        assert_eq!(
+            r.top_shifts[0],
+            Shift {
+                delta: (2 * BS) as i64,
+                blocks: 5
+            }
+        );
+        // one contiguous run: A bytes 0.. -> B bytes 8.., length 5 blocks.
+        assert_eq!(r.top_runs.len(), 1);
+        assert_eq!(
+            r.top_runs[0],
+            MatchedRun {
+                a_start: 0,
+                b_start: 2 * BS,
+                len: 5 * BS,
+            }
+        );
+        assert_eq!(r.top_runs[0].delta(), (2 * BS) as i64);
+        assert!((r.shared_ratio() - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn relocation_separates_two_shift_plateaus() {
+        // First region {1,2,3} unchanged in place; an insertion {7} then the
+        // second region {4,5} shifted by +1 block. Two plateaus: 0 and +BS.
+        let a = img(&[1, 2, 3, 4, 5]);
+        let b = img(&[1, 2, 3, 7, 4, 5]);
+        let r = relocation_diff(&a, &b, BS, 0, 64);
+
+        assert_eq!(r.in_place_blocks, 3); // 1,2,3 didn't move
+        let deltas: Vec<(i64, usize)> = r.top_shifts.iter().map(|s| (s.delta, s.blocks)).collect();
+        assert!(deltas.contains(&(0, 3)));
+        assert!(deltas.contains(&(BS as i64, 2)));
+        // longest run is the in-place {1,2,3}.
+        assert_eq!(r.top_runs[0].len, 3 * BS);
+        assert_eq!(r.top_runs[0].delta(), 0);
     }
 
     #[test]

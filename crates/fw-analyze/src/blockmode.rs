@@ -46,12 +46,22 @@ fn block_stats(data: &[u8], size: usize) -> (usize, usize) {
     (n, seen.len())
 }
 
-pub fn run(image: &Path, offset: u64, len: Option<u64>, block: usize) -> Result<()> {
+pub fn run(image: &Path, offset: u64, len: Option<u64>, block: usize, app1: bool) -> Result<()> {
     anyhow::ensure!(block > 0, "block size must be > 0");
     let data = fs::read(image).with_context(|| format!("reading {}", image.display()))?;
-    let start = offset as usize;
-    anyhow::ensure!(start < data.len(), "offset past end of file");
-    let end = len.map_or(data.len(), |l| (start + l as usize).min(data.len()));
+    // `--app1` overrides offset/len with the image's encrypted payload range.
+    let (start, end) = if app1 {
+        let (o, l) = crate::image::app1_payload_range(&data)
+            .with_context(|| format!("{} is not an App1_Main image", image.display()))?;
+        (o, o + l)
+    } else {
+        let start = offset as usize;
+        anyhow::ensure!(start < data.len(), "offset past end of file");
+        (
+            start,
+            len.map_or(data.len(), |l| (start + l as usize).min(data.len())),
+        )
+    };
     let region = &data[start..end];
 
     println!(

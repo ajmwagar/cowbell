@@ -12,6 +12,7 @@ mod checksum;
 mod diff;
 mod entropy;
 mod hexdump;
+mod image;
 mod magic;
 
 use anyhow::Result;
@@ -103,6 +104,14 @@ enum Command {
         /// Start both images at this byte offset before comparing.
         #[arg(long, default_value_t = 0)]
         offset: u64,
+        /// Treat both inputs as `App1_Main` images and compare only each one's
+        /// encrypted payload (auto offset/len). Requires --block.
+        #[arg(long)]
+        app1: bool,
+        /// Also run the relocation pass: find content that survived but moved
+        /// (shift plateaus + matched runs). The right lens across versions.
+        #[arg(long)]
+        relocate: bool,
     },
 
     /// Block-cipher mode analysis: ECB fingerprint vs. a keystream/XOR pad.
@@ -118,6 +127,10 @@ enum Command {
         /// Candidate cipher block size in bytes.
         #[arg(long, default_value_t = 8)]
         block: usize,
+        /// Treat the input as an `App1_Main` image and analyse only its
+        /// encrypted payload (auto offset/len; ignores --offset/--len).
+        #[arg(long)]
+        app1: bool,
     },
 
     /// Shell out to `binwalk` if it is installed (signature scan by default).
@@ -149,7 +162,8 @@ fn main() -> Result<()> {
             offset,
             len,
             block,
-        } => blockmode::run(&image, offset, len, block),
+            app1,
+        } => blockmode::run(&image, offset, len, block, app1),
         Command::Hexdump { image, offset, len } => hexdump::run(&image, offset, len),
         Command::Checksum {
             image,
@@ -163,7 +177,9 @@ fn main() -> Result<()> {
             max_runs,
             block,
             offset,
-        } => diff::run(&a, &b, max_runs, block, offset),
+            app1,
+            relocate,
+        } => diff::run(&a, &b, max_runs, block, offset, app1, relocate),
         Command::Binwalk { image, args } => run_binwalk(&image, &args),
     }
 }
