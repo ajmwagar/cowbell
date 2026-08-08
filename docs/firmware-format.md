@@ -250,6 +250,89 @@ So even granting a known-plaintext pair for every one of the top ten blocks — 
 more than we have — you decrypt 6% of the image and learn nothing about the code.
 The codebook is 2^64 rows wide and we hold roughly one useful row.
 
+#### Worked example: XOR-ing the padding out (both `00` and `FF`)
+
+Run the "XOR the known plaintext out to get the key" idea against a cipher where
+we *pick* the key, so the answer is checkable. Using **XTEA** (a 64-bit-block
+candidate) with a key we chose:
+
+| assumed pad | candidate `KS = fill ⊕ pad` | decrypts a *different* block? | `pad ⊕ C_pad` = `secret ⊕ C_secret`? |
+| ----------- | --------------------------- | ----------------------------- | ------------------------------------- |
+| `00…` | `ead425c2a35c0919` | ❌ garbage | `ead4…` ≠ `7490…` |
+| `FF…` | `959fbb86ad6a12a3` | ❌ garbage | `959f…` ≠ `7490…` |
+
+The last column is the crux. If a key-only keystream existed (`C = P ⊕ KS`), then
+`P ⊕ C` would be the *same* value for every block — it isn't. `FF` yields a
+genuinely different candidate than `00`, and both fail, because the padding value
+only picks *which single block's plaintext you're guessing*, never how many. The
+identical procedure on a real stream cipher recovers the block perfectly; on ECB
+it can't, because `C = E_K(P)` runs the plaintext through the cipher's rounds —
+there is no keystream term to cancel. Reproduce:
+
+```python
+def xtea_enc(v0, v1, key):           # a real 64-bit block cipher (a candidate)
+    d, s, M = 0x9E3779B9, 0, 0xffffffff
+    for _ in range(32):
+        v0 = (v0 + ((((v1 << 4) & M ^ v1 >> 5) + v1) ^ (s + key[s & 3]))) & M
+        s = (s + d) & M
+        v1 = (v1 + ((((v0 << 4) & M ^ v0 >> 5) + v0) ^ (s + key[(s >> 11) & 3]))) & M
+    return v0, v1
+
+KEY = [0x13371337, 0xCAFEBABE, 0xDEADBEEF, 0x0BADC0DE]   # we know it -> checkable
+E = lambda b: b"".join(x.to_bytes(4, "big") for x in
+                       xtea_enc(int.from_bytes(b[:4], "big"),
+                                int.from_bytes(b[4:], "big"), KEY))
+xor = lambda a, b: bytes(x ^ y for x, y in zip(a, b))
+secret, C_secret = b"TR6S\0\0\0\5", E(b"TR6S\0\0\0\5")
+for pad in (bytes(8), b"\xff" * 8):
+    KS = xor(E(pad), pad)                       # candidate keystream from the pad
+    print(xor(C_secret, KS) == secret)          # decrypt another block? -> False, False
+```
+
+#### Can we guess more plaintext — ARM opcodes, an ISA, a vector table?
+
+Tempting, and worth stating exactly why it doesn't extend the decryption:
+
+1. **You can't verify a code guess without the key.** Guessing "this block is an
+   ARM prologue" has no check — the only self-verifying guess is content forced by
+   frequency/structure (the padding block) or a byte-exact **positional crib**
+   (known value at a known offset). We have the padding; we have no confirmed crib
+   (the ISA is unknown, so even the reset-vector layout is a guess).
+2. **Even a *correct* guess only decodes its exact repeats.** ECB is a codebook
+   keyed by block value: a confirmed `(P, C)` decrypts every block whose ciphertext
+   is `C`, and nothing else. Code blocks are almost all unique — measured on our
+   *plaintext* ARM panel firmware, **97% of 8-byte blocks occur exactly once** — so
+   a correct code-block guess would decode ~1 block. Guessing buys coverage only on
+   *repetitive* content (padding, zero-runs, constant tables), which is the least
+   informative part.
+3. **ECB blocks are independent, so cribs can't be chained — this is the deep
+   reason.** In a stream cipher / two-time-pad, `C₁ ⊕ C₂ = P₁ ⊕ P₂`: a relationship
+   *between* blocks that lets you drag a crib and validate it against the whole
+   message. ECB has no such relationship — `Cᵢ = E_K(Pᵢ)` in isolation — so one
+   crib is one codebook row that tells you nothing about any other block. Crib-
+   dragging, the thing that makes guessed plaintext cascade elsewhere, **does not
+   propagate here.**
+
+**What guessing/ISA-comparison *does* buy — a structural fingerprint, measured.**
+ECB preserves block *frequency*, so we can compare the encrypted image's
+repetition profile against known plaintext without decrypting:
+
+| Content | 8-byte-block duplicate rate |
+| ------- | --------------------------- |
+| Plaintext ARM code (our panel MCUs) | **~3%** (top block = zero-padding) |
+| Encrypted TR-6S `App1_Main` | **~30%** |
+
+Real instruction streams barely repeat at 8-byte granularity; the image's 10×
+higher duplication is **not code** — it is the fill block plus the large static
+data band the [relocation diff](#structural-mapping-from-cross-version-diffs-no-decryption)
+found. So "using ARM plaintext" *does* teach us something: the encrypted payload
+is code **plus** a lot of repetitive data/tables, not a pure code image — but that
+is a content-type inference from frequency, not a decryption.
+
+**Bottom line:** guessing plaintext yields the one padding crib we already hold
+(the DES-56 long-shot input), decodes only repeats, and cannot chain. It does not
+open the image. The key comes off the chip (`cowbell-8o5`).
+
 #### Does Ghidra corroborate the cipher? No — and that's the expected answer
 
 The ECB conclusion is a **black-box statistical property of the ciphertext**; it
