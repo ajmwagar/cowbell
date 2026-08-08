@@ -54,8 +54,12 @@ Observed on the reference backup:
 | `SYS ` | `0x40` | 752 B | System params — **decoded** (see "System record" below). Array of **1 record × 752 B**, byte-identical to the firmware `init_param` factory image. |
 | `PTN ` | `0x350` | 3,136,512 B | Array: **128 records × 24,504 B** (`0x5FB8`). Payload begins `count(u32)=128, record_size(u32)=0x5FB8`. |
 | `KIT ` | `0x2FDF70` | 167,936 B | Array: **128 records × 1,312 B** (`0x520`). Same `count,record_size` preamble. |
+| `TONE` | `0x326F90` | 36,864 B | Tone table: **1024 entries × 36 B** (`0x24`). |
+| `PCMT` | `0x32FFB0` | 65,536 B | PCM-tone table: **1024 records × 64 B** (`0x40`). |
 | `SMPL` | `0x33FFD0` | 0 B | User samples; empty here (none loaded). `extra` ≈ 0x3300000 = the reserved sample region — accounts for the ~51 MB of zero padding to EOF. |
-| `FX  ` | — | — | Seen ×4; effects config. Not yet mapped. |
+
+**There is no `FX  ` chunk** — earlier notes said one was "seen ×4"; that was a
+false positive, corrected below.
 
 Array sections self-describe with a `count,record_size` preamble, so the parser
 locates records generically. The "preamble" is not a separate structure: it is
@@ -132,6 +136,202 @@ schema shipped as `Contents/Resources/Script/Script.xml` (794 KB, ~27.8k lines):
 `<range>` `<default>` `<title>`. Section addresses match the backup
 (`kit`=`03 00 00 00`, `ptn`=`04 00 00 00`). This XML is the definitive map for
 the remaining records (patterns, FX, SYS) — parse it, don't guess.
+
+## Effects — there is no `FX  ` section
+
+**Status: decoded, inside the kit record.** The container has no FX chunk at
+all. The four `FX  ` byte runs the earlier notes counted are every one of them
+**unaligned and inside `TONE` entry names** — `Ring FX`, `Flute FX`, `Tube FX`,
+`Voice FX` at `0x32A3E1`, `0x32A9CA`, `0x32A9ED`, `0x32ABC2`. Walking the chunk
+chain from `0x40` (each chunk is `16 + payload`, then 16 zero bytes of padding to
+the next header) accounts for the entire file with `SYS`, `PTN`, `KIT`, `TONE`,
+`PCMT`, `SMPL` and leaves no room for another. **All effects state lives in the
+`KIT ` record**, which is also what TR Editor's model says (`fm.usrKit[k]` owns
+`kitRev`, `kitDly`, `kitMfx*`, `instFx*`).
+
+### The kit-record sub-struct chain — CONFIRMED
+
+`Script.xml`'s `kit` structType lists the sub-structs in record order.
+Accumulating their sizes with the [schema offset model](#schema-offset-model--solved)
+reproduces every boundary below, once two kit-specific facts are added:
+
+- **`int4x4` with range `0..=65535` is 2 bytes here**, not the 3 that `ptnCmn`
+  uses — the same exception `ptnVar00` shows. Forced by the data: `kitCmn`'s 11
+  `INST GROUP` masks + `KIT GROUP(S)` must span `+0x22..+0x39`, because the
+  eleven `SLIDER COLOR` bytes are at `+0x3A..+0x44` (the only 11-byte window
+  whose every value stays in `0..=11` across all 128 kits, with `+0x45..+0x53`
+  and `+0x22..+0x39` identically zero, and whose first three read `0,1,3` = the
+  schema defaults for BD/SD/LT).
+- **Every sub-struct starts at a 4-byte-aligned record offset.** Exactly the two
+  whose packed size is not a multiple of 4 get padded — `kitCmn` 67 → 68 and
+  `kitMfxShare` 25 → 28 — and every other sub-struct is already a multiple of 4.
+  This is what closes the arithmetic; without it the chain misses by 4.
+
+With those the chain lands exactly on the independently-confirmed
+`instCommon[0]` offset `+0x194`, which is the check that validates the whole
+thing:
+
+| Record | Struct | Size | Contents |
+| ------ | ------ | ---- | -------- |
+| `+0x10` | `kitCmn` | 68 (67+1 pad) | name, level, mute groups, slider colours |
+| `+0x54` | `kitRev` | 40 | **reverb** |
+| `+0x7C` | `kitDly` | 52 | **delay** |
+| `+0xB0` | `kitMfxCommon` | 20 | **master FX** type + on/off |
+| `+0xC4` | `kitMfxShare` | 28 (25+3 pad) | master FX `Ctrl` + `PRM00..23` |
+| `+0xE0` | `kitExtIn` | 40 | ext-input gain/pan + **reverb/delay sends** |
+| `+0x108` | `kitLfo` | 36 | kit LFO |
+| `+0x12C` | `kitCtrl` | 80 | CTRL assignments |
+| `+0x17C` | `kitOut` | 12 | per-instrument output routing |
+| `+0x188` | `kitRef` | 12 | kit references |
+| `+0x194` | `instCommon[0]` | 11 × 52 | the voice blocks (`instCommon`+`instShare`) |
+| `+0x3D0` | `instFxCommon[0]` | 11 × 32 | **per-instrument insert FX** |
+
+Each non-FX boundary corroborates independently on the backup: `kitLfo` reads
+`WAVEFORM 0 / RATE 128 / TEMPO SYNC 1` — its three schema defaults — at
+`+0x108..+0x10A`; `kitCtrl` reads `Select` then 44 bytes that never exceed `35`
+(its schema max) in four visibly regular 11-byte blocks; `kitOut`'s 12 bytes are
+all `0` (= MIX). There are **11** instrument blocks, not 6: a TR-6S backup still
+carries the TR-8S layout.
+
+### Reverb (`kitRev`, `+0x54`) — CONFIRMED
+
+| Off | Field | Range | Default | Modal byte on the backup |
+| --- | ----- | ----- | ------- | ------------------------ |
+| `+0x54` | REVERB TYPE | 0–6 | 2 (`HALL1`) | 2 ×114 |
+| `+0x55` | REVERB TIME | 0–255 | 150 | 150 ×114 |
+| `+0x56` | REVERB LEVEL | 0–255 | 0 | 0 ×96 |
+| `+0x57` | REVERB PRE DELAY | 0–100 | 20 | 20 ×123 |
+| `+0x58` | REVERB LOW CUT | 0–17 | 2 | 2 ×119 |
+| `+0x59` | REVERB HIGH CUT | 0–14 | 11 | 11 ×126 |
+| `+0x5A` | REVERB DENSITY | 0–10 | 10 | 10 ×127 |
+
+Types: `AMBI, ROOM, HALL1, HALL2, PLATE, MOD, HA-DOU`. `+0x5B..+0x7B` is reserve
+and reads zero in all 128 kits.
+
+### Delay (`kitDly`, `+0x7C`) — CONFIRMED (21 of 23)
+
+23 single bytes at `+0x7C..+0x92`, then 29 bytes of reserve. Every one is inside
+its schema range across all 128 kits, and the schema default is the modal byte
+for each: `TIME` 104 ×66, `FEEDBACK` 120 ×101, `HIGH CUT` 7 ×118, `HIGH DAMP F`
+13 ×125, `TAP TIME` 50 ×124, `ECHO MODE` 1 ×126, `ECHO BASS`/`ECHO TREBLE` 15 and
+`ECHO TAPE DIST` 4 in **all 128**, the three `ECHO PAN`s and the two `W/F`s 128
+×126–127. Several observations touch a range maximum exactly — `DELAY HIGH CUT`
+14 = max, `DELAY LOW DAMP` 81 = max, `ECHO MODE` 6 = max — which a drifted
+offset would not produce.
+
+Order: `DELAY TYPE, TEMPO SYNC, LEVEL, TIME, FEEDBACK, HIGH CUT, HIGH DAMP,
+HIGH DAMP F, LOW DAMP, LOW DAMP F, TAP TIME, ECHO MODE, ECHO BASS, ECHO TREBLE,
+ECHO PAN S/M/L, ECHO TAPE DIST, ECHO W/F RATE, ECHO W/F DEPTH, DELAY RVB SEND,
+PITCH COARSE, PITCH FINE`. Types: `DLY, PAN, TAPE ECHO, PITCH SHFT`; echo modes
+`S, M, L, S+M, S+L, M+L, S+M+L`.
+
+**The two exceptions are explained, not anomalies.** `PITCH COARSE` (201–237)
+and `PITCH FINE` (1–201) read `0` in every kit — below their ranges. They belong
+to `DELAY TYPE 3` (`PITCH SHFT`), and no factory kit selects it: the observed
+type histogram is `DLY ×114, PAN ×9, TAPE ECHO ×5`, max value 2. Uninitialised,
+so they are exposed raw and not interpreted.
+
+### The shared `PRM` pool — CONFIRMED
+
+Master FX and per-instrument insert FX both store their parameters in a generic
+`Ctrl` byte + `PRM00..PRM23`. What those bytes mean depends on the type field.
+The map is `Script.xml`'s **`alt` structType**, which lists one overlay struct
+per type index — `kitMfxComp, kitMfxDrv, kitMfxOd, …` and `instFxComp,
+instFxDrv, instFxCr, …` — in the same order as TR Editor's `mfxType` /
+`instFxType` name tables. Each overlay's first value is its own `Ctrl`, so
+**overlay value `n+1` is `PRMn`**.
+
+TR Editor's own EFX panel corroborates that directly rather than by inference:
+the panel opened for `Type 10..12` binds `PRM00`→Depth, `PRM01`→Resonance,
+`PRM02`→filter Type (`mfxFltType` combo), `PRM03`→Gain (max 80, offset −40, dB),
+`PRM04`→Clipper — exactly `kitMfxFlt` minus its `Ctrl`.
+
+**The decisive test.** Decode each kit's pool through the overlay its own type
+field selects, then check every byte against that parameter's schema range:
+
+| Table | Values checked | Out of range | Types exercised |
+| ----- | -------------- | ------------ | --------------- |
+| master FX (`kitMfxShare`) | 779 | **0** | 12 of 21 |
+| insert FX (`instFxShare`) | 6,157 | **0** | **17 of 17** |
+
+The test discriminates. Shifting the base by ±1/±2/±4 puts 2.1–26.5 % of values
+out of range; using a wrong insert-FX stride (28/30/31/33/34/36) puts 5.8–7.1 %
+out. (One degenerate alternative also scores 0: reading the insert-FX Type
+column 8 bytes early lands in the previous block's zero tail, so every type reads
+`0` with all-zero params. It is excluded by the type histogram — the real column
+shows 17 distinct types with the schema default 12 = `THRU` modal.)
+
+### Master FX (`kitMfxCommon` `+0xB0`, `kitMfxShare` `+0xC4`)
+
+| Off | Field | Range | Default | Observed |
+| --- | ----- | ----- | ------- | -------- |
+| `+0xB0` | `Type` | 0–20 | 11 (`HPF`) | 12 distinct values, all ≤ 17 |
+| `+0xB1` | `Sw` | 0–1 | 0 | strictly `{0,1}`; on in 13 of 128 kits |
+| `+0xB2..+0xC3` | reserve | — | 0 | zero in all 128 |
+| `+0xC4` | `Ctrl` | 0–15 | 0 | `{0,1,2}` |
+| `+0xC5..+0xDC` | `PRM00..PRM23` | — | — | see above |
+| `+0xDD..+0xDF` | alignment pad | — | 0 | zero in all 128 |
+
+The 21 types, in index order: `COMPRESSOR, DRIVE, OVERDRIVE, DISTORTION, FUZZ,
+CRUSHER, PHASER, FLANGER, TRANSIENT, TRANSIENT2, LPF, HPF, LPF/HPF, L BOOST,
+H BOOST, L/H BOOST, ISOLATOR, SBF, NOISE, FATTENER, VINYL SIM`.
+
+**Types 19 (`FATTENER`) and 20 (`VINYL SIM`) have no overlay struct** in this
+`Script.xml`, so their `PRM` names are **inferred** — taken from TR Editor's
+`mfxCtrl` CTRL-target table (`Depth, Level` / `Compressor, Noise, Wow Flut`) with
+**unknown ranges**. No factory kit uses either type, so there is nothing to check
+them against. The crate flags them with `FxTypeInfo::params_confirmed == false`
+and skips them in range checks rather than reporting a guess as a reading.
+
+### Per-instrument insert FX (`instFxCommon`/`instFxShare`, `+0x3D0`)
+
+Eleven blocks at `+0x3D0 + slot × 0x20` (`instFxCommon` 4 B + `instFxShare` 25 B
+padded to 28). Block layout: `Type`, 3 reserve bytes, `Ctrl`, `PRM00..PRM23`,
+3 pad. Located empirically, not just derived: there are exactly **11** offsets in
+`+0x3B0..+0x520` whose next three bytes are zero in all 128 kits and whose own
+value stays within `instFxCommon.Type`'s `0..=16`, and they are `+0x3D0` plus
+multiples of 32.
+
+The 17 types, in index order: `COMPRESSOR, DRIVE, CRUSHER, COMP+DRV, TRANSIENT,
+LPF, HPF, LPF/HPF, L BOOST, H BOOST, L/H BOOST, ISOLATOR, THRU, SATURATOR,
+FREQ SHIFT, RING MOD, SPREAD`. `THRU` (12) is the schema default and a true
+bypass — its overlay holds nothing but the shared `Ctrl`. Observed across
+128 × 11 slots: `THRU ×660, L/H BOOST ×346, COMP+DRV ×129, HPF ×90, LPF/HPF ×75`,
+tailing off through all 17.
+
+**The 11th block does not fit — UNRESOLVED.** Slot 10's block starts at `+0x510`
+and the kit record is `0x520` long, so only `Type`, the reserves, `Ctrl` and
+`PRM00..PRM10` are stored; `PRM11..PRM23` and the pad are 16 bytes past the end.
+The layout wants `0x530` and Roland's record is `0x520`. This is not a
+mis-derivation — the 11 type columns are individually verified above, the inst
+region ends exactly at `+0x3D0` (`0x194 + 11 × 52`), and slot 10 does carry live
+types (`COMP+DRV ×5`, which needs 18 `PRM`s). Why the record is 16 bytes short of
+its own schema is an open question; settling it wants a **TR-8S** backup (where
+slot 10 = `RC` is a real voice) or hardware. The crate reports it rather than
+hiding it: `InstFxParams::prm_available` is 24 for slots 0–9 and 11 for slot 10,
+`is_truncated()` says whether the selected type needs the missing bytes, and
+`named_params()` returns only what is actually stored.
+
+### External-input sends (`kitExtIn`, `+0xE0`) — CONFIRMED
+
+`SideChainSrc, SideChainType, SideChainDpt, Gain, Pan, ReverbSend, DelaySend` at
+`+0xE0..+0xE6`. Anchored by `Gain` at `+0xE3` — 25 distinct values spanning
+81–109, its schema default 81 in 66 kits, inside range 0–161 — and `Pan` at
+`+0xE4`, which is its default 128 in **all 128** kits.
+
+### Reading it back
+
+The decode reads as music, which is the last check:
+
+- `Lofi HipHop` → `ROOM` reverb at level 99, `TAPE ECHO` delay at level 189,
+  `L BOOST`/`TRANSIENT`/`COMP+DRV` inserts across the voices.
+- `TR-808_Kit` → `HALL1` at level 0 (reverb effectively off), plain `DLY`,
+  `COMP+DRV` on BD/SD/LT and `HPF` on the hats.
+- `TR-626_Kit` → `L/H BOOST` on every one of its six voices.
+
+Implemented as `tr_format::fx`: `ReverbParams`, `DelayParams`, `ExtInFx`,
+`MfxParams`, `InstFxParams`, the `MFX_TYPES` / `INST_FX_TYPES` parameter tables,
+and `Kit::reverb()` / `delay()` / `mfx()` / `ext_in_fx()` / `inst_fx()`.
 
 ## TR Editor data model (oracle)
 
@@ -368,7 +568,8 @@ diff (record motion on one parameter, save, diff), i.e. hardware.
 Exposed as `MotionWord` / `motion_lane_name()` / `Pattern::motion_word()` in
 `tr-format` and `MotionLanes` + `tr-studio motion <backup> <n> <var>` above it.
 
-FX (`FX  `) decodes the same way from `Script.xml`.
+The effects those `OTH0`/`OTH1` lanes automate live in the **kit** record, not in
+a section of their own — see "Effects" below.
 
 ## System record (`SYS ` section)
 
@@ -749,11 +950,15 @@ Next (record internals — the RE that turns bytes into editable fields):
    - Fold the `init_param` corrections (the `0x14` field is the **decompressed
      size**, not a load address; the "indexed parameter tables" reading was an
      artifact of compressed data) into `docs/firmware-format.md`.
-   - Re-open the **`+0x08` section token** with the second corpus as a test
-     vector — it now looks content-derived.
+   - Re-examine the **`+0x08` section token** with the second corpus — but note
+     the cross-version signal is confounded (whole-section identity includes the
+     token byte), so the discriminating test is a single-byte change on hardware,
+     not the corpus. Flagged, not adopted.
    - Still needing hardware: `sysMidi` slots 11–22 (the inferred ALT note map)
      and whether the 18-byte truncated `sysMidi` reserve tail is deliberate.
-4. **`FX  `** and the file-header checksum (`0x20` region — every byte that
+4. **`FX ` — done.** All effects state lives in the kit record (there is no
+   `FX  ` chunk); reverb/delay/master-FX/insert-FX decoded — see "Effects" above.
+   Remaining: the **file-header checksum** (`0x20` region — every byte that
    reacts to a content change lies in `0x20`–`0x29` or `0x3C`–`0x3F`, which
    bounds the checksum fields to those 14 bytes).
 
