@@ -23,6 +23,28 @@ What *does* exist is entirely at the **software/protocol layer, above firmware**
   ("no one had reverse-engineered the EXP format") and voice concern Roland
   might act on RE.
 
+### Cipher-identification OSINT sweep (2026-08-09) — nothing on the crypto
+
+Searched specifically for the *cipher/algorithm* (not just debug ports): TR-8S /
+ZEN-Core / BMC firmware **encryption**, `App1_Main`, and firmware-decrypt efforts
+on the sibling grooveboxes (MC-707/101, Fantom, Jupiter-X). **No public work
+identifies the cipher, key, or decryption of any BMC/ZEN-Core firmware image.**
+So the algorithm cannot be identified by OSINT — it stays an unknown until the
+NOR/bootloader is dumped (`cowbell-8o5`) and read with FindCrypt/capa/signsrch.
+This *reinforces* the plan; it does not change it.
+
+**Adjacent find — sibling data-format tooling (not firmware).**
+[`DrKnackerator/RolandZenDecodeXML`](https://github.com/DrKnackerator/RolandZenDecodeXML)
+(+ "ZenInspector") decode ZEN-Core **user-data/project** files — Jupiter-X/Xm,
+Fantom, Juno-X, Zenology, and MC-707/101 `PRJ`/`SVZ` (extracting ZCore tone
+data). No encryption/cipher involved; it parses Roland's **editor XML schema into
+byte offsets + SysEx addresses** — the *same method* this project uses (our
+`Script.xml` oracle → `tr-format` offsets, `device-sysex.md` → `tr-sysex`
+addresses). Useful as **corroboration and a cross-check** for the plaintext
+data-format work (do ZEN-Core's `SVZ`/`PRJ` tone/kit structures echo the TR
+backup's `TONE`/`KIT`?), and irrelevant to the crypto. A lead to evaluate for
+`tr-format`/`tr-sysex`, not yet inspected in depth.
+
 ## Why the hardware layer is unexplored
 
 1. **Roland channels modding into official tools** — the
