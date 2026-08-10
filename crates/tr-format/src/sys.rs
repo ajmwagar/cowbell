@@ -211,6 +211,42 @@ impl SysGeneral {
             trig_adjust: b[0x29],
         }
     }
+
+    /// Write these params back — the exact inverse of [`SysGeneral::from_block`].
+    /// Touches only the decoded bytes `+0x00..=0x29`.
+    pub fn write_to(&self, b: &mut [u8]) {
+        b[0x00] = self.lcd_contrast;
+        b[0x01] = self.led_bright;
+        b[0x02] = self.led_off_bright;
+        b[0x03] = self.slider_led;
+        b[0x04] = self.slider_color_source;
+        b[0x05] = self.auto_off;
+        b[0x06] = self.knob_mode;
+        b[0x07] = self.weak_beat;
+        b[0x08] = self.led_demo;
+        b[0x09] = self.auto_save;
+        b[0x0a] = self.tempo_src;
+        b[0x0b] = self.tempo_sync;
+        b[0x0c..0x0e].copy_from_slice(&self.tempo.to_le_bytes());
+        b[0x0e] = self.sync_out;
+        b[0x0f] = self.shuffle;
+        b[0x10] = self.seq_mode;
+        b[0x11] = self.manual_mode;
+        b[0x12] = self.kit_select;
+        b[0x13] = self.m_trig;
+        b[0x14] = self.usb_mode;
+        b[0x15] = self.usb_audio;
+        b[0x16] = self.scat_trig;
+        b[0x17] = self.hh_link;
+        b[0x18] = self.start_ptn;
+        b[0x19] = self.start_kit;
+        b[0x1a] = self.last_ptn;
+        b[0x1b] = self.last_kit;
+        b[0x1c] = self.ptn_lock;
+        b[0x1d..0x1d + SYS_SLIDER_COLORS].copy_from_slice(&self.slider_color);
+        b[0x28] = self.inst_pad;
+        b[0x29] = self.trig_adjust;
+    }
 }
 
 /// `sysSound` — output routing and external-input mode.
@@ -235,6 +271,14 @@ impl SysSound {
             assign: std::array::from_fn(|i| b[0x02 + i]),
             ext_in_mode: b[0x08],
         }
+    }
+
+    /// Write back — the exact inverse of [`SysSound::from_block`] (`+0x00..=0x08`).
+    pub fn write_to(&self, b: &mut [u8]) {
+        b[0x00] = self.local_sw;
+        b[0x01] = self.mix_out;
+        b[0x02..0x02 + SYS_ASSIGNS].copy_from_slice(&self.assign);
+        b[0x08] = self.ext_in_mode;
     }
 }
 
@@ -298,6 +342,27 @@ impl SysMidi {
             rx_edit_data: b[0x24],
             rx_fa_fc: b[0x25],
         }
+    }
+
+    /// Write back — the exact inverse of [`SysMidi::from_block`] (`+0x00..=0x25`).
+    /// The undecoded reserve tail after `+0x25` is left untouched.
+    pub fn write_to(&self, b: &mut [u8]) {
+        b[0x00] = self.device_id;
+        b[0x01] = self.omni_mode;
+        b[0x02] = self.pattern_ch;
+        b[0x03] = self.kit_ch;
+        b[0x04..0x04 + SYS_INST_NOTES].copy_from_slice(&self.inst_note);
+        b[0x1b] = self.usb_midi_thru;
+        b[0x1c] = self.soft_thru;
+        b[0x1d] = self.tx_prog_chg;
+        b[0x1e] = self.tx_bank_sel;
+        b[0x1f] = self.tx_edit_data;
+        b[0x20] = self.tx_nudge;
+        b[0x21] = self.tx_shuffle;
+        b[0x22] = self.rx_prog_chg;
+        b[0x23] = self.rx_bank_sel;
+        b[0x24] = self.rx_edit_data;
+        b[0x25] = self.rx_fa_fc;
     }
 
     /// The note assigned to instrument `inst` (0–10, [`crate::INST_TRACKS`]
@@ -393,6 +458,35 @@ impl Sys {
         (0..SYS_CATEGORY_COUNT)
             .filter_map(|i| self.category_name(raw, i))
             .collect()
+    }
+
+    /// Write the `sysGeneral` block back (inverse of [`Sys::general`]). Touches
+    /// only its decoded bytes; the rest of the body is preserved.
+    pub fn set_general(&self, raw: &mut [u8], g: &SysGeneral) {
+        let s = self.body_offset() + SYS_GENERAL_OFFSET;
+        g.write_to(&mut raw[s..]);
+    }
+
+    /// Write the `sysSound` block back (inverse of [`Sys::sound`]).
+    pub fn set_sound(&self, raw: &mut [u8], s: &SysSound) {
+        let o = self.body_offset() + SYS_SOUND_OFFSET;
+        s.write_to(&mut raw[o..]);
+    }
+
+    /// Write the `sysMidi` block back (inverse of [`Sys::midi`]).
+    pub fn set_midi(&self, raw: &mut [u8], m: &SysMidi) {
+        let o = self.body_offset() + SYS_MIDI_OFFSET;
+        m.write_to(&mut raw[o..]);
+    }
+
+    /// Set user category name `i` (0–31), space-padded (inverse of
+    /// [`Sys::category_name`]). Returns false if `i` is out of range.
+    pub fn set_category_name(&self, raw: &mut [u8], i: usize, name: &str) -> bool {
+        if i >= SYS_CATEGORY_COUNT {
+            return false;
+        }
+        let s = self.body_offset() + SYS_CATEGORY_OFFSET + i * SYS_CATEGORY_NAME_LEN;
+        crate::write_name_field(raw, s, SYS_CATEGORY_NAME_LEN, name)
     }
 
     /// The undecoded tail of the body: the head of `sysMidi`'s `RESERVE*` run
@@ -649,5 +743,52 @@ mod tests {
         })
         .unwrap();
         assert!(b2.sys().is_none());
+    }
+
+    #[test]
+    fn sys_setters_round_trip_and_stay_lossless() {
+        let mut b = Backup::parse(synthetic_sys()).unwrap();
+        let sys = b.sys().unwrap();
+        let orig = b.to_bytes();
+
+        // general: edit a few fields, write back, re-read.
+        let mut g = sys.general(b.raw());
+        g.tempo = 1400;
+        g.lcd_contrast = 7;
+        g.slider_color[3] = 9;
+        sys.set_general(b.raw_mut(), &g);
+        assert_eq!(sys.general(b.raw()), g);
+
+        // sound + midi write-back round-trips.
+        let mut snd = sys.sound(b.raw());
+        snd.assign[2] = 2;
+        sys.set_sound(b.raw_mut(), &snd);
+        assert_eq!(sys.sound(b.raw()), snd);
+
+        let mut m = sys.midi(b.raw());
+        m.pattern_ch = 5;
+        m.inst_note[1] = 60;
+        sys.set_midi(b.raw_mut(), &m);
+        assert_eq!(sys.midi(b.raw()), m);
+
+        // category name.
+        assert!(sys.set_category_name(b.raw_mut(), 4, "Perc"));
+        assert_eq!(sys.category_name(b.raw(), 4).unwrap(), "Perc");
+        assert!(!sys.set_category_name(b.raw_mut(), 99, "x"));
+
+        // Losslessness: every changed byte lies inside the SYS body; the record
+        // header, the 8-byte token, and anything past the body are untouched.
+        let after = b.to_bytes();
+        let body = sys.body_offset()..sys.body_offset() + SYS_BODY_LEN;
+        for i in 0..orig.len() {
+            if orig[i] != after[i] {
+                assert!(
+                    body.contains(&i),
+                    "byte 0x{i:x} changed outside the SYS body"
+                );
+            }
+        }
+        // the +0x08 token is preserved.
+        assert_eq!(sys.token(&orig), sys.token(&after));
     }
 }

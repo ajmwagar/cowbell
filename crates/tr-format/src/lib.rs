@@ -298,7 +298,7 @@ impl VoiceParams {
 /// the readers' `trim_end_matches([' ', '\0'])`. Truncates to `len` bytes.
 /// Returns false (writing nothing) if the field is out of range. Length-
 /// preserving: exactly `len` bytes are written.
-fn write_name_field(raw: &mut [u8], off: usize, len: usize, name: &str) -> bool {
+pub(crate) fn write_name_field(raw: &mut [u8], off: usize, len: usize, name: &str) -> bool {
     if off + len > raw.len() {
         return false;
     }

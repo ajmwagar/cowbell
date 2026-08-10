@@ -183,6 +183,17 @@ impl ReverbParams {
     pub fn type_name(&self) -> Option<&'static str> {
         reverb_type_name(self.reverb_type)
     }
+
+    /// Write back — inverse of [`ReverbParams::from_block`] (7 bytes).
+    pub fn write_to(&self, b: &mut [u8]) {
+        b[0] = self.reverb_type;
+        b[1] = self.time;
+        b[2] = self.level;
+        b[3] = self.pre_delay;
+        b[4] = self.low_cut;
+        b[5] = self.high_cut;
+        b[6] = self.density;
+    }
 }
 
 // --- Delay --------------------------------------------------------------------
@@ -284,6 +295,36 @@ impl DelayParams {
     pub fn echo_mode_name(&self) -> Option<&'static str> {
         echo_mode_name(self.echo_mode)
     }
+
+    /// Write back — inverse of [`DelayParams::from_block`] (23 bytes).
+    pub fn write_to(&self, b: &mut [u8]) {
+        let v = [
+            self.delay_type,
+            self.tempo_sync,
+            self.level,
+            self.time,
+            self.feedback,
+            self.high_cut,
+            self.high_damp,
+            self.high_damp_freq,
+            self.low_damp,
+            self.low_damp_freq,
+            self.tap_time,
+            self.echo_mode,
+            self.echo_bass,
+            self.echo_treble,
+            self.echo_pan_s,
+            self.echo_pan_m,
+            self.echo_pan_l,
+            self.echo_tape_dist,
+            self.echo_wf_rate,
+            self.echo_wf_depth,
+            self.reverb_send,
+            self.pitch_coarse,
+            self.pitch_fine,
+        ];
+        b[..v.len()].copy_from_slice(&v);
+    }
 }
 
 // --- External input sends -----------------------------------------------------
@@ -320,6 +361,17 @@ impl ExtInFx {
             reverb_send: b[5],
             delay_send: b[6],
         }
+    }
+
+    /// Write back — inverse of [`ExtInFx::from_block`] (7 bytes).
+    pub fn write_to(&self, b: &mut [u8]) {
+        b[0] = self.side_chain_src;
+        b[1] = self.side_chain_type;
+        b[2] = self.side_chain_depth;
+        b[3] = self.gain;
+        b[4] = self.pan;
+        b[5] = self.reverb_send;
+        b[6] = self.delay_send;
     }
 }
 
@@ -592,6 +644,76 @@ impl Kit {
         (0..INST_FX_SLOTS)
             .filter_map(|s| self.inst_fx(raw, s))
             .collect()
+    }
+
+    /// Mutable in-range slice of a kit field, or `None` if out of range —
+    /// the write counterpart to `field`.
+    fn field_mut<'a>(&self, raw: &'a mut [u8], offset: usize, len: usize) -> Option<&'a mut [u8]> {
+        let s = self.offset + offset;
+        (offset + len <= KIT_RECORD_SIZE && s + len <= raw.len()).then_some(&mut raw[s..s + len])
+    }
+
+    /// Write the kit's reverb settings back (inverse of [`Kit::reverb`]).
+    pub fn set_reverb(&self, raw: &mut [u8], p: &ReverbParams) -> bool {
+        self.field_mut(raw, KIT_REVERB_OFFSET, 7)
+            .map(|b| p.write_to(b))
+            .is_some()
+    }
+
+    /// Write the kit's delay settings back (inverse of [`Kit::delay`]).
+    pub fn set_delay(&self, raw: &mut [u8], p: &DelayParams) -> bool {
+        self.field_mut(raw, KIT_DELAY_OFFSET, 23)
+            .map(|b| p.write_to(b))
+            .is_some()
+    }
+
+    /// Write the external-input FX settings back (inverse of [`Kit::ext_in_fx`]).
+    pub fn set_ext_in_fx(&self, raw: &mut [u8], p: &ExtInFx) -> bool {
+        self.field_mut(raw, KIT_EXT_IN_OFFSET, 7)
+            .map(|b| p.write_to(b))
+            .is_some()
+    }
+
+    /// Write the master effect back (inverse of [`Kit::mfx`]): `Type`+`Sw` into
+    /// `kitMfxCommon`, `Ctrl`+`PRM00..23` into `kitMfxShare`.
+    pub fn set_mfx(&self, raw: &mut [u8], m: &MfxParams) -> bool {
+        if self.field_mut(raw, KIT_MFX_OFFSET, 2).is_none()
+            || self
+                .field_mut(raw, KIT_MFX_SHARE_OFFSET, 1 + FX_PRM_COUNT)
+                .is_none()
+        {
+            return false;
+        }
+        let common = self.field_mut(raw, KIT_MFX_OFFSET, 2).unwrap();
+        common[0] = m.fx_type;
+        common[1] = m.switch as u8;
+        let share = self
+            .field_mut(raw, KIT_MFX_SHARE_OFFSET, 1 + FX_PRM_COUNT)
+            .unwrap();
+        share[0] = m.ctrl;
+        share[1..1 + FX_PRM_COUNT].copy_from_slice(&m.prm);
+        true
+    }
+
+    /// Write an instrument's insert effect back (inverse of [`Kit::inst_fx`]).
+    /// Only the `prm_available` PRM bytes are written, so the truncated slot-10
+    /// block (`+0x510`, 11 bytes) is respected — no write past the record end.
+    pub fn set_inst_fx(&self, raw: &mut [u8], f: &InstFxParams) -> bool {
+        if f.slot >= INST_FX_SLOTS {
+            return false;
+        }
+        let base = INST_FX_OFFSET + f.slot * INST_FX_STRIDE;
+        // instFxCommon.Type at +0, instFxShare.Ctrl at +4.
+        let Some(head) = self.field_mut(raw, base, 5) else {
+            return false;
+        };
+        head[0] = f.fx_type;
+        head[4] = f.ctrl;
+        let avail = f.prm_available.min(FX_PRM_COUNT);
+        if let Some(prm) = self.field_mut(raw, base + 5, avail) {
+            prm.copy_from_slice(&f.prm[..avail]);
+        }
+        true
     }
 }
 
@@ -2145,5 +2267,64 @@ mod tests {
             assert_eq!(kit.inst_fx(b.raw(), 0), None);
             assert!(kit.inst_fx_all(b.raw()).is_empty());
         }
+    }
+
+    #[test]
+    fn fx_setters_round_trip_and_stay_lossless() {
+        let mut b = Backup::parse(synthetic_kits(1)).unwrap();
+        let kit = b.kits()[0];
+        let orig = b.to_bytes();
+
+        // reverb / delay / ext-in write-back round-trips.
+        let mut rv = kit.reverb(b.raw()).unwrap();
+        rv.reverb_type = 2;
+        rv.time = 150;
+        assert!(kit.set_reverb(b.raw_mut(), &rv));
+        assert_eq!(kit.reverb(b.raw()), Some(rv));
+
+        let mut dl = kit.delay(b.raw()).unwrap();
+        dl.feedback = 120;
+        dl.echo_mode = 1;
+        assert!(kit.set_delay(b.raw_mut(), &dl));
+        assert_eq!(kit.delay(b.raw()), Some(dl));
+
+        let mut ei = kit.ext_in_fx(b.raw()).unwrap();
+        ei.gain = 81;
+        assert!(kit.set_ext_in_fx(b.raw_mut(), &ei));
+        assert_eq!(kit.ext_in_fx(b.raw()), Some(ei));
+
+        // master FX: type + switch + ctrl + PRM pool.
+        let mut m = kit.mfx(b.raw()).unwrap();
+        m.fx_type = 3;
+        m.switch = true;
+        m.ctrl = 5;
+        m.prm[0] = 100;
+        m.prm[23] = 7;
+        assert!(kit.set_mfx(b.raw_mut(), &m));
+        assert_eq!(kit.mfx(b.raw()), Some(m));
+
+        // insert FX for a non-truncated slot round-trips fully.
+        let mut f = kit.inst_fx(b.raw(), 0).unwrap();
+        f.fx_type = 5;
+        f.ctrl = 9;
+        f.prm[0] = 42;
+        assert!(kit.set_inst_fx(b.raw_mut(), &f));
+        assert_eq!(kit.inst_fx(b.raw(), 0), Some(f));
+
+        // Losslessness: every changed byte is inside this kit record; and the
+        // truncated slot-10 write never runs past the record end.
+        let after = b.to_bytes();
+        let rec = kit.offset..kit.offset + KIT_RECORD_SIZE;
+        for i in 0..orig.len() {
+            if orig[i] != after[i] {
+                assert!(
+                    rec.contains(&i),
+                    "byte 0x{i:x} changed outside the kit record"
+                );
+            }
+        }
+        let f10 = kit.inst_fx(b.raw(), 10).unwrap();
+        assert!(f10.prm_available < FX_PRM_COUNT);
+        assert!(kit.set_inst_fx(b.raw_mut(), &f10)); // must not panic / overrun
     }
 }
