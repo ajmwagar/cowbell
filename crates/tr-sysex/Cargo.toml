@@ -1,0 +1,24 @@
+[package]
+name = "tr-sysex"
+description = "Roland RQ1/DT1 SysEx protocol for the TR-6S/TR-8S — build data-request (RQ1) and data-set (DT1) messages, Roland checksum, 7-bit address/value codec. Message construction only; no MIDI I/O and no device writes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tr_sysex"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tr-sysex"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+# Reuse the exact schema/address model reversed in tr-format so the two crates
+# agree on how device values are sized for 7-bit MIDI transport.
+tr-format = { path = "../tr-format" }

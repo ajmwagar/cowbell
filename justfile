@@ -73,6 +73,20 @@ diff a b:
 checksum image expect:
     cargo run -q -p fw-analyze -- checksum {{image}} --expect {{expect}}
 
+# --- SysEx (RQ1/DT1) — message construction only, never sent to a device ------
+
+# Build an RQ1 data-request (read) message; ADDR may be `kit`/`pattern` or hex.
+sysex-rq1 addr size:
+    cargo run -q -p tr-sysex -- rq1 {{addr}} --size {{size}}
+
+# Parse a Roland SysEx byte string (hex, or @file) and verify its checksum.
+sysex-parse input:
+    cargo run -q -p tr-sysex -- parse "{{input}}"
+
+# Compute the Roland checksum over an address+data run of hex bytes.
+sysex-checksum bytes:
+    cargo run -q -p tr-sysex -- checksum "{{bytes}}"
+
 # Open the research notes.
 notes:
-    @echo "docs/hardware.md  docs/firmware-format.md  docs/architecture-questions.md"
+    @echo "docs/hardware.md docs/firmware-format.md docs/tr-format.md docs/sysex.md docs/prior-art.md docs/architecture-questions.md"

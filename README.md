@@ -32,17 +32,29 @@ the maintainer owns.
 cowbell/
 ├── crates/
 │   ├── fw-analyze/   # CLI: entropy, magic/header inspection, hexdump,
-│   │                 #      checksum brute-forcing, image diffing, binwalk wrapper
-│   └── fw-extract/   # CLI: identify + unpack Roland Win/Mac installers,
-│                     #      carve out the raw firmware payload
+│   │                 #      checksum brute-forcing, ECB block-diff, binwalk wrapper
+│   ├── fw-extract/   # CLI: identify + unpack Roland Win/Mac/tar installers,
+│   │                 #      carve out the raw firmware payload
+│   ├── tr-format/    # lib+CLI: lossless reader/writer for TR-6S/8S user data
+│   │                 #      (backup container, kits, patterns) — plaintext only
+│   ├── tr-studio/    # lib+CLI: ergonomic high-level API over tr-format
+│   │                 #      (step grids, named voices, builders)
+│   └── tr-sysex/     # lib+CLI: Roland RQ1/DT1 SysEx protocol (read/write
+│                     #      messages) — message construction only, no MIDI I/O
 └── docs/             # research notes (markdown, not code)
-    ├── hardware.md               # chip ID findings (ESC2 vs BMC vs E4E; RAM/flash)
-    ├── firmware-format.md        # .bin structure, update mechanism, checksum/signing
+    ├── hardware.md               # chip ID findings (BMC vs E4E; RAM/flash)
+    ├── firmware-format.md        # .bin structure, tar container, encryption, key
+    ├── tr-format.md              # user-data (backup/kit/pattern) format
+    ├── sysex.md                  # Roland RQ1/DT1 protocol notes
+    ├── prior-art.md              # RE landscape + hardware-access recon
     └── architecture-questions.md # open-questions log
 ```
 
-Firmware code for the target itself comes **later**, once the compute chip and
-its ISA are identified (tracked in `docs/architecture-questions.md`).
+Two tracks live here: **firmware RE** (`fw-*`, encrypted `App1_Main`, gated on a
+NOR dump) and **user-data interop** (`tr-*`, plaintext backups/patterns/SysEx —
+a FOSS alternative to Roland's TR-EDITOR). Firmware code for the target itself
+comes **later**, once the compute chip and its ISA are identified (tracked in
+`docs/architecture-questions.md`).
 
 ## Build
 
