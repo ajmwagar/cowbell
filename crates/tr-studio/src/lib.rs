@@ -12,7 +12,11 @@ use tr_format::{
 };
 
 mod project;
+mod slicer;
 pub use project::{KitInfo, PatternInfo, Project, SampleSlice, ToneInfo, VoiceInfo};
+pub use slicer::{
+    apply_breakbeat, export_slices, slice_grid, BreakbeatSpec, Slice, SlicePlan, Wav, MAX_SLICES,
+};
 
 /// Step tracks 0..6 are the six audible voices (BD/SD/LT/HC/CH/OH); verified
 /// musically on the reference backup. Tracks 6..11 are the unused INST07–11

@@ -35,6 +35,18 @@ enum Command {
         #[arg(default_value_t = 0)]
         variation: usize,
     },
+    /// Chop a break WAV into N slices and write one WAV per slice (the
+    /// pre-sliced breakbeat path). Import the slices to tone slots, then wire
+    /// them with the library's `apply_breakbeat`.
+    Slice {
+        /// A 16-bit PCM WAV of the break.
+        wav: PathBuf,
+        /// Number of slices.
+        slices: usize,
+        /// Directory to write the slice WAVs into (created if missing).
+        #[arg(long, default_value = "slices")]
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -50,7 +62,43 @@ fn main() -> Result<()> {
             pattern,
             variation,
         } => motion(&backup, pattern, variation),
+        Command::Slice { wav, slices, out } => slice_cmd(&wav, slices, &out),
     }
+}
+
+fn slice_cmd(wav_path: &std::path::Path, n: usize, out: &std::path::Path) -> Result<()> {
+    use tr_studio::{export_slices, slice_grid, Wav, MAX_SLICES};
+    let bytes =
+        std::fs::read(wav_path).with_context(|| format!("reading {}", wav_path.display()))?;
+    let wav = Wav::read(&bytes).context("parsing WAV (needs 16-bit PCM)")?;
+    let plan = slice_grid(&wav, n)?;
+    std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    let files = export_slices(&wav, &plan);
+    let secs = plan.total_frames as f32 / plan.sample_rate as f32;
+    println!(
+        "{:.2}s break, {} ch @ {} Hz -> {} slices",
+        secs,
+        plan.channels,
+        plan.sample_rate,
+        plan.slices.len()
+    );
+    for ((name, data), s) in files.iter().zip(&plan.slices) {
+        let path = out.join(name);
+        std::fs::write(&path, data).with_context(|| format!("writing {}", path.display()))?;
+        let ms = s.len_frames() as f32 / plan.sample_rate as f32 * 1000.0;
+        println!(
+            "  {name}  frames {}..{} ({ms:.0} ms)",
+            s.start_frame, s.end_frame
+        );
+    }
+    if n > MAX_SLICES {
+        println!(
+            "note: a kit sequences at most {MAX_SLICES} slices; the extra {} are for manual use.",
+            n - MAX_SLICES
+        );
+    }
+    println!("wrote {} slice WAVs to {}", files.len(), out.display());
+    Ok(())
 }
 
 fn motion(path: &std::path::Path, number: usize, variation: usize) -> Result<()> {
