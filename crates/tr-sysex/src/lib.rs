@@ -99,9 +99,18 @@ pub const ADDRESS_LEN: usize = 4;
 /// on real TR-8S captures.
 pub const DEFAULT_DEVICE_ID: u8 = 0x10;
 
-/// The **TR-8S** model-ID bytes, `00 00 00 45` — **confirmed** from real RQ1/DT1
-/// wire captures (every one of 1,956 messages across two capture files uses it).
-pub const MODEL_ID_TR8S: [u8; 4] = [0x00, 0x00, 0x00, 0x45];
+/// The Roland model ID for the TR-6S **and** TR-8S — they **share** it,
+/// `00 00 00 45`. Confirmed two ways: real TR-8S RQ1/DT1 captures (every one of
+/// 1,956 messages), and TR Editor's `Script.xml`, whose single `TR CTRL`
+/// `midiIn`/`midiOut` declares `<modelID>00 00 00 45</modelID>` for both boxes.
+/// The two models are told apart by a separate device-model field (`1` = TR-8S,
+/// `2` = TR-6S), not by the model ID.
+pub const MODEL_ID_TR: [u8; 4] = [0x00, 0x00, 0x00, 0x45];
+
+/// Alias of [`MODEL_ID_TR`] — the TR-8S model ID.
+pub const MODEL_ID_TR8S: [u8; 4] = MODEL_ID_TR;
+/// Alias of [`MODEL_ID_TR`] — the TR-6S model ID (same bytes as the TR-8S).
+pub const MODEL_ID_TR6S: [u8; 4] = MODEL_ID_TR;
 
 /// The Roland one-byte checksum over an address+data run:
 /// `(0x80 − (sum(bytes) & 0x7F)) & 0x7F`.
@@ -215,11 +224,18 @@ impl DeviceConfig {
         }
     }
 
-    /// A **TR-8S** config with the confirmed model ID ([`MODEL_ID_TR8S`]) and the
+    /// A **TR-8S** config with the confirmed model ID ([`MODEL_ID_TR`]) and the
     /// given SysEx ID (use [`DEFAULT_DEVICE_ID`] unless the unit's Utility "SysEx
     /// ID" was changed).
     pub fn tr8s(device_id: u8) -> Self {
-        DeviceConfig::new(device_id, MODEL_ID_TR8S.to_vec())
+        DeviceConfig::new(device_id, MODEL_ID_TR.to_vec())
+    }
+
+    /// A **TR-6S** config. The TR-6S shares the TR-8S model ID ([`MODEL_ID_TR`]),
+    /// so this is identical to [`DeviceConfig::tr8s`] — provided for clarity at
+    /// call sites.
+    pub fn tr6s(device_id: u8) -> Self {
+        DeviceConfig::new(device_id, MODEL_ID_TR.to_vec())
     }
 
     /// Bytes of the fixed message prefix: `F0 41 <deviceId> <modelId…>`.

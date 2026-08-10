@@ -43,7 +43,7 @@ F0  41  <deviceId>  <modelId…>  <cmd>  <addr…>  <data…>  <checksum>  F7
 | `F0` | 1 | SysEx start (240) |
 | `41` | 1 | Roland manufacturer ID |
 | `deviceId` | 1 | the Utility "SysEx ID" (0-based unit number) |
-| `modelId` | n | model identifier (the TR-8S model bytes; from the captures) |
+| `modelId` | 4 | **`00 00 00 45`** — shared by TR-6S **and** TR-8S (confirmed) |
 | `cmd` | 1 | **`0x11` = RQ1 (data request / read)**, **`0x12` = DT1 (data set / write)** |
 | `addr` | 4 | 4-byte device address (big-endian, 7-bit-safe) |
 | `data` | m | present on DT1 (and on the DT1 the device sends back to answer an RQ1) |
@@ -216,8 +216,9 @@ Two nuances the captures surface:
   **base-128 per field** (`⌈bits/7⌉` bytes — the same rule `tr-format` derives from
   `Script.xml`), not MIDI 7-in-8 packed. The `encode_7bit` helper is kept but
   flagged as probably-not-the-device-scheme.
-- The **TR-6S** model ID is still unknown (these are TR-8S captures); a TR-6S
-  capture would confirm it (likely a near neighbour of `00 00 00 45`).
+- The **TR-6S shares the model ID** `00 00 00 45` — confirmed from TR Editor's
+  Script.xml (the single `TR CTRL` midiIn/midiOut declares it for both boxes; the
+  two are told apart by a device-model field, 1=8S / 2=6S, not the model ID).
 
 ## Corroboration — the universal Roland RQ1/DT1 spec
 
