@@ -35,7 +35,36 @@ A 64-byte file header, then a sequence of 16-byte-header chunks.
 | `0x08` | 4 | format version (`5` observed) |
 | `0x0C` | 4 | 0 |
 | `0x10` | 16 | name field (spaces when blank) |
-| `0x20` | 32 | header fields + a checksum-looking word (TBD) |
+| `0x20` | 10 | content-correlated **token** (`0x20`–`0x29`) — **not** a plain checksum; unresolved (see below) |
+| `0x2A` | 18 | zero |
+| `0x38` | 4 | constant `18 E9 FF 13` (same in every backup) |
+| `0x3C` | 4 | **header CRC-32** (`u32` LE) — **SOLVED** (see below) |
+
+#### Header CRC-32 at `0x3C` — SOLVED
+
+The word at `0x3C` is a standard **CRC-32** (zlib/IEEE: poly `0x04C11DB7`,
+reflected, init & xorout `0xFFFFFFFF` — the same variant as the firmware) over
+the **header bytes before it, `[0x00, 0x3C)`**, stored little-endian. Recovered
+with two independent `(header, CRC)` pairs — the v1.51 backup
+(`crc32(hdr[0:0x3C]) = 0xEC79C172`) and the factory image decompressed from
+`init_param` — both reproduced exactly, and re-confirmed through `fw-analyze
+checksum --offset 0 --len 60`. Implemented as `Backup::header_crc` /
+`computed_header_crc` / `header_crc_valid` / `recompute_header_crc` (+ a
+dependency-free `crc32`).
+
+**Practical payoff:** a written backup whose header changed can be made
+header-valid again with one `recompute_header_crc()`. Section-*content* edits
+(past `0x40`) do not touch this CRC.
+
+#### The `0x20` token — content-correlated, unresolved
+
+The 10 bytes at `0x20`–`0x29` differ between the two corpora, so they track
+content — but they are **not** a plain checksum: their **low nibbles are
+constant** across both backups (`1,4,3,3,3,3,3,3`) while the high nibbles vary,
+and no CRC/sum over the content reproduces them. That is the signature of the
+same keyed/device-generated **token family** as the `+0x08` section token — see
+the `+0x08` section below. Left raw; it matters only for a device-safe write of
+edited *content*, and settling it needs the same hardware save-change-save test.
 
 ### Chunk (from 0x40 onward)
 

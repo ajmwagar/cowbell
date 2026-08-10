@@ -45,6 +45,28 @@ pub const MAGIC_TR8S: &[u8; 4] = b"TR8S";
 
 /// Bytes before the first chunk (the fixed file header).
 pub const HEADER_LEN: usize = 0x40;
+/// Offset of the file-header **CRC-32** (`u32` LE) within the header. It covers
+/// the header bytes before it — `[0x00, HEADER_CRC_OFFSET)`. See
+/// [`Backup::header_crc`] and `docs/tr-format.md`.
+pub const HEADER_CRC_OFFSET: usize = 0x3C;
+
+/// Standard CRC-32 (IEEE / zlib: poly `0xEDB88320` reflected, init & xorout
+/// `0xFFFFFFFF`) — the algorithm Roland uses for both the firmware image and
+/// this backup header. Kept inline so the crate stays dependency-free.
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
 /// Chunk header: tag(4) + reserved(4) + payload_size(4) + extra(4).
 pub const CHUNK_HEADER_LEN: usize = 16;
 
@@ -176,6 +198,34 @@ impl Backup {
             t[i] = b;
         }
         self.sections.iter().find(|s| s.tag == t)
+    }
+
+    /// The stored file-header CRC-32 (`u32` LE at [`HEADER_CRC_OFFSET`]).
+    pub fn header_crc(&self) -> u32 {
+        let o = HEADER_CRC_OFFSET;
+        u32::from_le_bytes(self.raw[o..o + 4].try_into().unwrap())
+    }
+
+    /// The CRC-32 the header *should* carry: [`crc32`] over the header bytes
+    /// before the field, `[0x00, HEADER_CRC_OFFSET)`.
+    pub fn computed_header_crc(&self) -> u32 {
+        crc32(&self.raw[..HEADER_CRC_OFFSET])
+    }
+
+    /// Whether the stored header CRC matches the header contents. Confirmed on
+    /// the v1.51 reference backup and the factory image inside `init_param`.
+    pub fn header_crc_valid(&self) -> bool {
+        self.header_crc() == self.computed_header_crc()
+    }
+
+    /// Recompute and store the file-header CRC-32. Call after any edit that
+    /// changes the first [`HEADER_CRC_OFFSET`] header bytes, so a written backup
+    /// stays header-valid. (Edits to section *content* past `0x40` do not affect
+    /// this CRC; but note the header's `0x20` field is a separate, still-
+    /// unresolved content-correlated token — see `docs/tr-format.md`.)
+    pub fn recompute_header_crc(&mut self) {
+        let crc = self.computed_header_crc();
+        self.raw[HEADER_CRC_OFFSET..HEADER_CRC_OFFSET + 4].copy_from_slice(&crc.to_le_bytes());
     }
 
     /// Replace a section's payload with `new` in place. Requires the same
@@ -1714,6 +1764,40 @@ mod tests {
             serde_json::from_str::<InstFxParams>(&serde_json::to_string(&ifx).unwrap()).unwrap(),
             ifx
         );
+    }
+
+    #[test]
+    fn crc32_matches_the_standard_check_vector() {
+        // The canonical CRC-32/ISO-HDLC check value for "123456789".
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32(b""), 0);
+    }
+
+    #[test]
+    fn header_crc_reads_validates_and_recomputes() {
+        let mut b = Backup::parse(synthetic()).unwrap();
+        // A fresh recompute makes the header valid; the stored word equals the
+        // CRC-32 over the first 0x3C bytes.
+        b.recompute_header_crc();
+        assert!(b.header_crc_valid());
+        assert_eq!(b.header_crc(), crc32(&b.to_bytes()[..HEADER_CRC_OFFSET]));
+
+        // Touch a header byte -> CRC no longer matches -> recompute fixes it,
+        // and only the 4 CRC bytes changed.
+        let before = b.to_bytes();
+        b.raw_mut()[0x10] = b'X';
+        assert!(!b.header_crc_valid());
+        b.recompute_header_crc();
+        assert!(b.header_crc_valid());
+        let after = b.to_bytes();
+        for i in 0..before.len() {
+            if before[i] != after[i] {
+                assert!(
+                    i == 0x10 || (HEADER_CRC_OFFSET..HEADER_CRC_OFFSET + 4).contains(&i),
+                    "unexpected change at 0x{i:x}"
+                );
+            }
+        }
     }
 
     #[test]
