@@ -183,6 +183,42 @@ bytes and checksum end-to-end, and map the persistent-slot base addresses. A
 clean-room Rust implementation over `tr-format`'s typed model would then give
 direct device I/O.
 
+## Confirmed from real TR-8S captures (2026-08-10)
+
+The `compuphonic/TR-8S-SysEx` repo's `.mmon` files are **MIDI-Monitor captures of
+actual TR-8S wire traffic** (binary plists; the messages are `SMSystemExclusiveMessage`
+objects whose `NS.data` holds each message body `41 <dev> <model×4> <cmd> <addr×4>
+… <ck>`). Decoding two of them — "initial connection" (1,000 messages) and "send
+pattern 8-16 kit 127" (956) — settles everything that was inferred, with the facts
+extracted (not the files vendored):
+
+| Field | Captured value | Was |
+| ----- | -------------- | --- |
+| device ID | `0x10` (all 1,956) | default assumption |
+| **model ID (TR-8S)** | **`00 00 00 45`** (all 1,956) | *unknown / parameter* |
+| command | RQ1 `0x11` / DT1 `0x12` | ✓ |
+| **checksum** | **0 mismatches / 1,956** vs our `roland_checksum` | corroborated → **confirmed** |
+| address | 4 bytes, 7-bit | ✓ |
+| **RQ1 length** | **4-byte field**, base-128 | inferred width |
+| **base-128** | a 1,171-byte request is `00 00 09 13` — impossible in base-256 on a 7-bit wire | inferred |
+| DT1 data | every byte `≤ 0x7F` | ✓ |
+
+`tr-sysex` now ships `MODEL_ID_TR8S` + `DeviceConfig::tr8s()`, promotes the
+address/length/checksum docs from *inferred* to *confirmed*, and has a test built
+from a real captured RQ1 (`… 47 2c 00 10 00 00 00 08 75`).
+
+Two nuances the captures surface:
+
+- **No 256-byte cap for the TR-8S.** Single DT1s run up to **1,171 data bytes** —
+  the JV-era 256-byte limit does not apply here, so bulk kit/pattern transfers do
+  *not* need chunking at that size (`cowbell-1ne.3` is lower priority than thought).
+- **7-in-8 packing is likely unused.** Multi-byte parameters are carried
+  **base-128 per field** (`⌈bits/7⌉` bytes — the same rule `tr-format` derives from
+  `Script.xml`), not MIDI 7-in-8 packed. The `encode_7bit` helper is kept but
+  flagged as probably-not-the-device-scheme.
+- The **TR-6S** model ID is still unknown (these are TR-8S captures); a TR-6S
+  capture would confirm it (likely a near neighbour of `00 00 00 45`).
+
 ## Corroboration — the universal Roland RQ1/DT1 spec
 
 Roland's RQ1/DT1 is a **universal** scheme, unchanged since the GS era, so a

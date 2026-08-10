@@ -24,10 +24,11 @@
 //! - `F0` / `F7` — SysEx start / end.
 //! - `41` — Roland manufacturer ID.
 //! - `deviceId` — the Utility "SysEx ID" (0-based unit number), one byte.
-//! - `modelId` — the model identifier, **n bytes**. The doc does *not* pin the
-//!   exact bytes ("the TR-8S model bytes; from the captures"), so this crate
-//!   never invents them: [`DeviceConfig`] carries the model id supplied by the
-//!   caller (from a real capture). See [`DeviceConfig::model_id`].
+//! - `modelId` — the model identifier, **4 bytes**. **CONFIRMED** for the TR-8S:
+//!   [`MODEL_ID_TR8S`] = `00 00 00 45`, from real RQ1/DT1 captures (every one of
+//!   1,956 messages across two capture files). Use [`DeviceConfig::tr8s`]. The
+//!   **TR-6S** id is not yet captured, so [`DeviceConfig::new`] still takes model
+//!   bytes for that case (no value invented).
 //! - `cmd` — [`CMD_RQ1`] (`0x11`, read/request) or [`CMD_DT1`] (`0x12`,
 //!   write/set). The DT1 the device sends to answer an RQ1 uses the same `0x12`.
 //! - `addr` — a 4-byte, 7-bit-safe device address (see [`address`]).
@@ -43,26 +44,34 @@
 //! any [`MidiPort`], so the whole protocol is exercised from byte-stream
 //! fixtures with no hardware (see the tests and [`MidiPort`]).
 //!
-//! ## 7-bit packing
+//! ## Confirmed against real captures (2026-08-10)
 //!
-//! Data payloads wider than 7 bits are 7-bit-packed on the wire (the reference
-//! JS `encode/decode7bitBytes`). The exact packing layout is **not** spelled
-//! out in the doc; [`encode_7bit`] / [`decode_7bit`] implement the common
-//! MIDI 7-in-8 scheme and are exact inverses, but the specific byte layout is
-//! **inferred** and wants a real capture to confirm — see those functions.
+//! Decoding real TR-8S RQ1/DT1 wire captures (`docs/device-sysex.md`) pins the
+//! wire format: **0 checksum mismatches across 1,956 messages**, and every one
+//! uses device ID `0x10`, model ID `00 00 00 45`, a **4-byte address**, and —
+//! for RQ1 — a **4-byte requested-length** field. Multi-byte values are carried
+//! **base-128** (7 bits per byte): a captured 1,171-byte request is `00 00 09 13`,
+//! which no base-256 reading could put on a 7-bit wire. So the address/length
+//! encoding in [`address`] and [`DeviceConfig::build_rq1`] is confirmed.
+//!
+//! ## 7-bit packing — still open (and possibly not the right model)
+//!
+//! [`encode_7bit`] / [`decode_7bit`] implement the common MIDI **7-in-8** scheme.
+//! But the captures do **not** show it: every DT1 data byte is already `<= 0x7F`,
+//! and multi-byte parameters look **base-128 per field** (`⌈bits/7⌉` bytes each,
+//! matching `tr-format`'s schema sizing), not 7-in-8 packed. So the 7-in-8
+//! helpers are kept but flagged — the device's actual multi-byte encoding is
+//! base-128, and 7-in-8 may simply be unused here.
 //!
 //! ## Not yet done (deliberate follow-ups)
 //!
 //! - **Device-field → typed model.** Decoding DT1 payloads into the rich
 //!   `Kit` / `Pattern` / `Sys` records from the `tr-format` crate is a separate
-//!   step. This cut returns raw DT1 data bytes; the mapping (and the
-//!   `tr-format` dependency) is left for the follow-up.
+//!   step (`cowbell-1ne.1`). This cut returns raw DT1 data bytes.
 //! - **Persistent-slot base addresses.** [`address`] models the edit buffer
-//!   (`temp`) plus per-slot block strides. The doc notes the device also walks
-//!   an `offsets` table for persistent slots; those base addresses are not
-//!   modeled here.
-//! - **Confirming `modelId` and the checksum/packing end to end** against a
-//!   real RQ1/DT1 capture. See [`DeviceConfig`] and [`encode_7bit`].
+//!   (`temp`); the captures also show persistent-slot reads at other bases
+//!   (e.g. `37 xx` / `47 xx` for tones), not yet mapped.
+//! - **TR-6S model ID** — needs a TR-6S capture (the TR-8S is confirmed).
 
 pub mod address;
 
@@ -85,6 +94,14 @@ pub const CMD_RQ1: u8 = 0x11;
 pub const CMD_DT1: u8 = 0x12;
 /// Address length in bytes.
 pub const ADDRESS_LEN: usize = 4;
+
+/// Default device ID (the Utility "SysEx ID"), `0x10` — confirmed as the value
+/// on real TR-8S captures.
+pub const DEFAULT_DEVICE_ID: u8 = 0x10;
+
+/// The **TR-8S** model-ID bytes, `00 00 00 45` — **confirmed** from real RQ1/DT1
+/// wire captures (every one of 1,956 messages across two capture files uses it).
+pub const MODEL_ID_TR8S: [u8; 4] = [0x00, 0x00, 0x00, 0x45];
 
 /// The Roland one-byte checksum over an address+data run:
 /// `(0x80 − (sum(bytes) & 0x7F)) & 0x7F`.
@@ -198,6 +215,13 @@ impl DeviceConfig {
         }
     }
 
+    /// A **TR-8S** config with the confirmed model ID ([`MODEL_ID_TR8S`]) and the
+    /// given SysEx ID (use [`DEFAULT_DEVICE_ID`] unless the unit's Utility "SysEx
+    /// ID" was changed).
+    pub fn tr8s(device_id: u8) -> Self {
+        DeviceConfig::new(device_id, MODEL_ID_TR8S.to_vec())
+    }
+
     /// Bytes of the fixed message prefix: `F0 41 <deviceId> <modelId…>`.
     fn prefix(&self) -> Vec<u8> {
         let mut p = Vec::with_capacity(3 + self.model_id.len());
@@ -228,11 +252,8 @@ impl DeviceConfig {
     /// Build an **RQ1** (read request): "give me `len` bytes at `address`".
     ///
     /// The requested length is encoded as a 4-byte base-128 value, mirroring the
-    /// address width. This 4-byte size field is the standard modern Roland RQ1
-    /// form — corroborated by the universal RQ1/DT1 spec (Glenn Meader's Roland
-    /// SysEx reference: a 4-byte address + 4-byte count) and by the ARIA device
-    /// capture, which uses 4-byte addresses. A TR-specific capture would make it
-    /// airtight, but it is no longer a bare guess.
+    /// address width. **Confirmed** on real TR-8S RQ1 captures: the size field is
+    /// 4 bytes, base-128 (a captured 1,171-byte request is `00 00 09 13`).
     pub fn build_rq1(&self, address: RolandAddress, len: u32) -> Vec<u8> {
         let len_field = RolandAddress::from_value(len).bytes();
         self.frame(CMD_RQ1, address, &len_field)
@@ -570,5 +591,30 @@ mod tests {
     fn address_value_round_trips_base128() {
         let a = RolandAddress::new([0x20, 0x40, 0x7F, 0x03]);
         assert_eq!(RolandAddress::from_value(a.to_value()), a);
+    }
+
+    #[test]
+    fn parses_a_real_captured_tr8s_message() {
+        // A real RQ1 from a TR-8S capture (docs/device-sysex.md): the body bytes
+        // `41 10 00 00 00 45 11 47 2c 00 10 00 00 00 08 75`, wrapped in F0..F7.
+        // These are Roland's protocol on the wire — facts, not vendored code.
+        let msg = [
+            0xF0, 0x41, 0x10, 0x00, 0x00, 0x00, 0x45, 0x11, 0x47, 0x2c, 0x00, 0x10, 0x00, 0x00,
+            0x00, 0x08, 0x75, 0xF7,
+        ];
+        let cfg = DeviceConfig::tr8s(DEFAULT_DEVICE_ID);
+        let parsed = cfg.parse(&msg).expect("real TR-8S RQ1 must parse");
+        assert_eq!(parsed.command, CMD_RQ1);
+        assert_eq!(parsed.device_id, 0x10);
+        assert_eq!(parsed.model_id, MODEL_ID_TR8S);
+        assert_eq!(parsed.address.bytes(), [0x47, 0x2c, 0x00, 0x10]);
+        assert_eq!(parsed.requested_len(), Some(8));
+        // our checksum (over addr+data, msg[8..16]) reproduces the captured 0x75.
+        assert_eq!(roland_checksum(&msg[8..16]), 0x75);
+        // and we rebuild the exact same bytes.
+        assert_eq!(
+            cfg.build_rq1(RolandAddress::new([0x47, 0x2c, 0x00, 0x10]), 8),
+            msg
+        );
     }
 }
