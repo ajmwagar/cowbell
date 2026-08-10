@@ -74,6 +74,7 @@
 //! - **TR-6S model ID** — needs a TR-6S capture (the TR-8S is confirmed).
 
 pub mod address;
+pub mod read;
 
 #[cfg(feature = "usb")]
 pub mod midir_port;
