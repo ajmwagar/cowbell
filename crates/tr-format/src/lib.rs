@@ -273,6 +273,42 @@ impl VoiceParams {
             category_lock: b[0x0c],
         }
     }
+
+    /// Write these params back into a voice block — the exact inverse of
+    /// [`VoiceParams::from_block`]. Touches only the 13 decoded bytes
+    /// (`+0x00..=0x0C`); the rest of the `0x34` block (still-unknown reserve
+    /// bytes) is left untouched, preserving the losslessness contract.
+    pub fn write_to(&self, block: &mut [u8]) {
+        block[0x00..0x02].copy_from_slice(&self.tone.to_le_bytes());
+        block[0x02] = self.tune;
+        block[0x03] = self.decay;
+        block[0x04] = self.level;
+        block[0x05] = self.gain;
+        block[0x06] = self.pan;
+        block[0x07] = self.reverb_send;
+        block[0x08] = self.delay_send;
+        block[0x09] = self.lfo_switch;
+        block[0x0a] = self.lfo_dest;
+        block[0x0b] = self.lfo_depth;
+        block[0x0c] = self.category_lock;
+    }
+}
+
+/// Write an ASCII name into a fixed-length field, space-padded — the inverse of
+/// the readers' `trim_end_matches([' ', '\0'])`. Truncates to `len` bytes.
+/// Returns false (writing nothing) if the field is out of range. Length-
+/// preserving: exactly `len` bytes are written.
+fn write_name_field(raw: &mut [u8], off: usize, len: usize, name: &str) -> bool {
+    if off + len > raw.len() {
+        return false;
+    }
+    let bytes = name.as_bytes();
+    let n = bytes.len().min(len);
+    raw[off..off + n].copy_from_slice(&bytes[..n]);
+    for b in &mut raw[off + n..off + len] {
+        *b = b' ';
+    }
+    true
 }
 
 /// One `TONE` table entry (bytes): name[16] + params[20].
@@ -324,6 +360,47 @@ impl Kit {
             let o = self.offset + VOICE_TONE_ID_OFFSET + i * VOICE_STRIDE;
             VoiceParams::from_block(&raw[o..o + VOICE_STRIDE])
         })
+    }
+
+    /// Byte offset of voice `i`'s block within the file.
+    fn voice_offset(&self, voice: usize) -> usize {
+        self.offset + VOICE_TONE_ID_OFFSET + voice * VOICE_STRIDE
+    }
+
+    /// Set the kit name (`+0x10`, 16 bytes, space-padded). The inverse of
+    /// [`Kit::name`]. Returns false if out of range.
+    pub fn set_name(&self, raw: &mut [u8], name: &str) -> bool {
+        write_name_field(raw, self.offset + KIT_NAME_OFFSET, KIT_NAME_LEN, name)
+    }
+
+    /// Set voice `voice`'s tone-ID (`u16` LE at the voice block start). `voice`
+    /// 0–5 (BD…OH). Returns false if out of range.
+    pub fn set_voice_tone(&self, raw: &mut [u8], voice: usize, tone: u16) -> bool {
+        if voice >= VOICES.len() {
+            return false;
+        }
+        let o = self.voice_offset(voice);
+        if o + 2 > raw.len() {
+            return false;
+        }
+        raw[o..o + 2].copy_from_slice(&tone.to_le_bytes());
+        true
+    }
+
+    /// Write a voice's full [`VoiceParams`] back (the inverse of one entry of
+    /// [`Kit::voices`]). `voice` 0–5. Touches only the decoded param bytes; the
+    /// rest of the `0x34` voice block is preserved. Returns false if out of
+    /// range.
+    pub fn set_voice_params(&self, raw: &mut [u8], voice: usize, params: &VoiceParams) -> bool {
+        if voice >= VOICES.len() {
+            return false;
+        }
+        let o = self.voice_offset(voice);
+        if o + VOICE_STRIDE > raw.len() {
+            return false;
+        }
+        params.write_to(&mut raw[o..o + VOICE_STRIDE]);
+        true
     }
 }
 
@@ -720,6 +797,37 @@ impl Pattern {
     /// The kit slot (1–128) this pattern references.
     pub fn kit_ref(&self, raw: &[u8]) -> u8 {
         raw[self.offset + PATTERN_KIT_REF_OFFSET]
+    }
+
+    /// Set the pattern name (`+0x10`, 16 bytes, space-padded) — inverse of
+    /// [`Pattern::name`]. Returns false if out of range.
+    pub fn set_name(&self, raw: &mut [u8], name: &str) -> bool {
+        write_name_field(raw, self.offset + PATTERN_NAME_OFFSET, 16, name)
+    }
+
+    /// Set the tempo in BPM (stored as `u16` LE `BPM×10`) — inverse of
+    /// [`Pattern::tempo_bpm`]. Clamps to the schema range 40.0–300.0 BPM. Returns
+    /// false if out of range.
+    pub fn set_tempo_bpm(&self, raw: &mut [u8], bpm: f32) -> bool {
+        let o = self.offset + PATTERN_TEMPO_OFFSET;
+        if o + 2 > raw.len() {
+            return false;
+        }
+        // `ptnCmn.TEMPO` range is 400–3000 (BPM×10).
+        let stored = (bpm * 10.0).round().clamp(400.0, 3000.0) as u16;
+        raw[o..o + 2].copy_from_slice(&stored.to_le_bytes());
+        true
+    }
+
+    /// Set the referenced kit slot (1–128) — inverse of [`Pattern::kit_ref`].
+    /// Returns false if out of range.
+    pub fn set_kit_ref(&self, raw: &mut [u8], kit: u8) -> bool {
+        let o = self.offset + PATTERN_KIT_REF_OFFSET;
+        if o >= raw.len() {
+            return false;
+        }
+        raw[o] = kit;
+        true
     }
 
     /// Raw byte offset of one 4-byte word within the record. `variation` 0–9,
@@ -1378,5 +1486,126 @@ mod tests {
         assert_eq!(b2.to_bytes().len(), b.to_bytes().len());
         // wrong-length edit is refused
         assert!(b2.replace_payload(sys_idx, &[0, 0]).is_err());
+    }
+
+    // ---- typed write/edit API (cowbell-j6b.9) --------------------------------
+
+    /// Assert that `before`/`after` (equal length) differ **only** inside the
+    /// byte window `[off, off + len)` — the write API's losslessness contract:
+    /// an edit never moves a byte outside the field it targets. (It need not
+    /// change every byte in the window — e.g. writing a tempo only flips the
+    /// bytes that actually differ.)
+    fn assert_changed_within(before: &[u8], after: &[u8], off: usize, len: usize) {
+        assert_eq!(before.len(), after.len());
+        for i in 0..before.len() {
+            if before[i] != after[i] {
+                assert!(
+                    (off..off + len).contains(&i),
+                    "byte 0x{i:x} changed outside the field [0x{off:x}, 0x{:x})",
+                    off + len
+                );
+            }
+        }
+        assert!(
+            (off..off + len).any(|i| before[i] != after[i]),
+            "no byte changed in the field"
+        );
+    }
+
+    #[test]
+    fn kit_setters_write_only_their_fields() {
+        let (bytes, _, _) = synthetic_with_kit_and_tones();
+        let mut b = Backup::parse(bytes).unwrap();
+        let orig = b.to_bytes();
+        let kit = b.kits()[0];
+        let base = kit.offset;
+
+        // name
+        assert!(kit.set_name(b.raw_mut(), "MyKit"));
+        assert_eq!(kit.name(b.raw()), "MyKit");
+        assert_changed_within(&orig, b.raw(), base + KIT_NAME_OFFSET, KIT_NAME_LEN);
+
+        // voice tone (u16 LE at the voice block start)
+        let before = b.to_bytes();
+        assert!(kit.set_voice_tone(b.raw_mut(), 2, 0x0321));
+        assert_eq!(kit.voice_tone_ids(b.raw())[2], 0x0321);
+        assert_changed_within(
+            &before,
+            b.raw(),
+            base + VOICE_TONE_ID_OFFSET + 2 * VOICE_STRIDE,
+            2,
+        );
+
+        // full VoiceParams write-back touches only the 13 decoded bytes
+        // (`+0x00..=0x0C`); the rest of the 0x34 block is preserved.
+        let before = b.to_bytes();
+        let mut vp = kit.voices(b.raw())[3];
+        vp.tune = 200;
+        vp.level = 111;
+        vp.category_lock = 1;
+        assert!(kit.set_voice_params(b.raw_mut(), 3, &vp));
+        assert_eq!(kit.voices(b.raw())[3], vp);
+        assert_changed_within(
+            &before,
+            b.raw(),
+            base + VOICE_TONE_ID_OFFSET + 3 * VOICE_STRIDE,
+            0x0d,
+        );
+
+        // out-of-range voice is refused, no panic.
+        assert!(!kit.set_voice_tone(b.raw_mut(), 6, 0));
+        assert!(!kit.set_voice_params(b.raw_mut(), 9, &vp));
+    }
+
+    #[test]
+    fn pattern_setters_write_only_their_fields() {
+        // one PTN record.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"TR6S");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&5u32.to_le_bytes());
+        v.resize(HEADER_LEN, 0);
+        v.extend_from_slice(b"PTN ");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&(PATTERN_RECORD_SIZE as u32).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&vec![0u8; PATTERN_RECORD_SIZE]);
+        let mut b = Backup::parse(v).unwrap();
+        let p = b.patterns()[0];
+        let base = p.offset;
+
+        let orig = b.to_bytes();
+        assert!(p.set_name(b.raw_mut(), "Beat One"));
+        assert_eq!(p.name(b.raw()), "Beat One");
+        assert_changed_within(&orig, b.raw(), base + PATTERN_NAME_OFFSET, 16);
+
+        let before = b.to_bytes();
+        assert!(p.set_tempo_bpm(b.raw_mut(), 128.0));
+        assert_eq!(p.tempo_bpm(b.raw()), 128.0);
+        assert_changed_within(&before, b.raw(), base + PATTERN_TEMPO_OFFSET, 2);
+        // clamps to the schema range (40.0–300.0).
+        p.set_tempo_bpm(b.raw_mut(), 9000.0);
+        assert_eq!(p.tempo_bpm(b.raw()), 300.0);
+
+        let before = b.to_bytes();
+        assert!(p.set_kit_ref(b.raw_mut(), 42));
+        assert_eq!(p.kit_ref(b.raw()), 42);
+        assert_changed_within(&before, b.raw(), base + PATTERN_KIT_REF_OFFSET, 1);
+    }
+
+    #[test]
+    fn name_field_pads_and_truncates() {
+        let mut buf = vec![0xAAu8; 20];
+        assert!(write_name_field(&mut buf, 2, 16, "Hi"));
+        assert_eq!(&buf[2..4], b"Hi");
+        assert!(buf[4..18].iter().all(|&b| b == b' '), "padded with spaces");
+        assert_eq!(&buf[0..2], &[0xAA, 0xAA], "bytes before field untouched");
+        assert_eq!(&buf[18..20], &[0xAA, 0xAA], "bytes after field untouched");
+        // over-long name truncates to the field width.
+        let mut buf = vec![0u8; 16];
+        assert!(write_name_field(&mut buf, 0, 16, "0123456789ABCDEFGHIJ"));
+        assert_eq!(&buf, b"0123456789ABCDEF");
+        // out of range refuses.
+        assert!(!write_name_field(&mut buf, 8, 16, "x"));
     }
 }
