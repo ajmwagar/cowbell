@@ -21,6 +21,7 @@
 
 mod carve;
 mod container;
+mod lzss;
 mod unpack;
 
 use anyhow::Result;
@@ -70,6 +71,16 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         max_size: u64,
     },
+
+    /// Decompress a Roland `init_param` file (LZSS) to its factory-default
+    /// backup image — a `tr-format`-parseable `TR6S` container.
+    InitParam {
+        /// An `init_param` file (e.g. `dd001_init_param.bin`).
+        file: PathBuf,
+        /// Where to write the decompressed backup.
+        #[arg(long, default_value = "factory_backup.bin")]
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -90,5 +101,19 @@ fn main() -> Result<()> {
             min_size,
             if max_size == 0 { u64::MAX } else { max_size },
         ),
+        Command::InitParam { file, out } => {
+            let raw = std::fs::read(&file)
+                .map_err(|e| anyhow::anyhow!("reading {}: {e}", file.display()))?;
+            let backup = lzss::decompress_init_param(&raw)?;
+            std::fs::write(&out, &backup)
+                .map_err(|e| anyhow::anyhow!("writing {}: {e}", out.display()))?;
+            let magic = String::from_utf8_lossy(&backup[..4]);
+            println!(
+                "decompressed {} bytes -> {} (magic {magic})",
+                backup.len(),
+                out.display()
+            );
+            Ok(())
+        }
     }
 }
