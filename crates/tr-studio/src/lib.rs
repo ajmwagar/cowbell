@@ -11,6 +11,9 @@ use tr_format::{
     PATTERN_STEPS_PER_TRACK, PATTERN_STEP_TRACKS, VOICES,
 };
 
+mod project;
+pub use project::{KitInfo, PatternInfo, Project, SampleSlice, ToneInfo, VoiceInfo};
+
 /// Step tracks 0..6 are the six audible voices (BD/SD/LT/HC/CH/OH); verified
 /// musically on the reference backup. Tracks 6..11 are the unused INST07–11
 /// slots and track 11 is TRIG (trigger out).

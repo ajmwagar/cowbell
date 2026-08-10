@@ -393,6 +393,10 @@ pub const TONE_ENTRY_SIZE: usize = 0x24;
 pub const TONE_ENTRY_BASE_IN_PAYLOAD: usize = 0x10;
 /// Length of a tone name.
 pub const TONE_NAME_LEN: usize = 16;
+/// First **user** tone ID: IDs `0..624` are factory presets, `624..=1023` are
+/// user tones (imported samples). Matches the device address map's
+/// `USER_TONE_ID_MIN` (`docs/device-sysex.md`).
+pub const USER_TONE_ID_MIN: u16 = 624;
 
 /// A kit record located within the `KIT ` section. A lightweight view — call
 /// [`Kit::name`] / [`Kit::bytes`] with the owning [`Backup`]'s `raw()`.
