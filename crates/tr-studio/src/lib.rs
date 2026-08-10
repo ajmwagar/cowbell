@@ -11,8 +11,10 @@ use tr_format::{
     PATTERN_STEPS_PER_TRACK, PATTERN_STEP_TRACKS, VOICES,
 };
 
+mod bassline;
 mod project;
 mod slicer;
+pub use bassline::{Note, TuneLane, TuneMap, TUNE_CENTER};
 pub use project::{KitInfo, PatternInfo, Project, SampleSlice, ToneInfo, VoiceInfo};
 pub use slicer::{
     apply_breakbeat, apply_shared_pcm, export_slices, plan_shared_pcm, slice_grid, BreakbeatSpec,
