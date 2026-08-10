@@ -45,7 +45,7 @@
 //! | `0x2A8`–`0x2CD` | `sysMidi` (named fields) | 38 |
 //! | `0x2CE`–`0x2DF` | `sysMidi` reserve tail (zero) | 18 |
 
-use crate::{Backup, Section};
+use crate::{Backup, RolandBlock, Section};
 
 /// Bytes of one `SYS ` record — and of the whole `SYS ` payload, since there is
 /// exactly one record. Declared by the record header itself (`payload+0x04`).
@@ -174,9 +174,13 @@ impl SysGeneral {
     pub fn tempo_bpm(&self) -> f32 {
         f32::from(self.tempo) / 10.0
     }
+}
 
-    /// Parse from a `sysGeneral` block (at least [`SYS_GENERAL_LEN`] bytes).
-    pub fn from_block(b: &[u8]) -> SysGeneral {
+impl RolandBlock for SysGeneral {
+    /// Decoded span `+0x00..=0x29` (42 bytes).
+    const LEN: usize = 0x2a;
+
+    fn from_block(b: &[u8]) -> SysGeneral {
         SysGeneral {
             lcd_contrast: b[0x00],
             led_bright: b[0x01],
@@ -212,9 +216,7 @@ impl SysGeneral {
         }
     }
 
-    /// Write these params back — the exact inverse of [`SysGeneral::from_block`].
-    /// Touches only the decoded bytes `+0x00..=0x29`.
-    pub fn write_to(&self, b: &mut [u8]) {
+    fn write_to(&self, b: &mut [u8]) {
         b[0x00] = self.lcd_contrast;
         b[0x01] = self.led_bright;
         b[0x02] = self.led_off_bright;
@@ -262,9 +264,11 @@ pub struct SysSound {
     pub ext_in_mode: u8,
 }
 
-impl SysSound {
-    /// Parse from a `sysSound` block (at least 9 bytes).
-    pub fn from_block(b: &[u8]) -> SysSound {
+impl RolandBlock for SysSound {
+    /// Decoded span `+0x00..=0x08` (9 bytes).
+    const LEN: usize = 9;
+
+    fn from_block(b: &[u8]) -> SysSound {
         SysSound {
             local_sw: b[0x00],
             mix_out: b[0x01],
@@ -273,8 +277,7 @@ impl SysSound {
         }
     }
 
-    /// Write back — the exact inverse of [`SysSound::from_block`] (`+0x00..=0x08`).
-    pub fn write_to(&self, b: &mut [u8]) {
+    fn write_to(&self, b: &mut [u8]) {
         b[0x00] = self.local_sw;
         b[0x01] = self.mix_out;
         b[0x02..0x02 + SYS_ASSIGNS].copy_from_slice(&self.assign);
@@ -321,9 +324,12 @@ pub struct SysMidi {
     pub rx_fa_fc: u8,
 }
 
-impl SysMidi {
-    /// Parse from a `sysMidi` block (at least [`SYS_MIDI_NAMED_LEN`] bytes).
-    pub fn from_block(b: &[u8]) -> SysMidi {
+impl RolandBlock for SysMidi {
+    /// Decoded span `+0x00..=0x25` (38 bytes); the reserve tail after `+0x25` is
+    /// preserved by `write_to`.
+    const LEN: usize = 0x26;
+
+    fn from_block(b: &[u8]) -> SysMidi {
         SysMidi {
             device_id: b[0x00],
             omni_mode: b[0x01],
@@ -344,9 +350,7 @@ impl SysMidi {
         }
     }
 
-    /// Write back — the exact inverse of [`SysMidi::from_block`] (`+0x00..=0x25`).
-    /// The undecoded reserve tail after `+0x25` is left untouched.
-    pub fn write_to(&self, b: &mut [u8]) {
+    fn write_to(&self, b: &mut [u8]) {
         b[0x00] = self.device_id;
         b[0x01] = self.omni_mode;
         b[0x02] = self.pattern_ch;
@@ -364,7 +368,9 @@ impl SysMidi {
         b[0x24] = self.rx_edit_data;
         b[0x25] = self.rx_fa_fc;
     }
+}
 
+impl SysMidi {
     /// The note assigned to instrument `inst` (0–10, [`crate::INST_TRACKS`]
     /// order), or `None` if the slot is [`INST_NOTE_OFF`] / out of range.
     ///

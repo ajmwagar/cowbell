@@ -924,6 +924,29 @@ retained bytes, never a re-serialization; edits are length-preserving in place.
 This is the safety property a librarian needs: touching one section can never
 corrupt unknown/reserved bytes.
 
+### Typed write API
+
+Every decoded field has a setter that mirrors its reader and writes **in place**,
+so the losslessness contract holds at field granularity — an edit changes only
+the bytes of the field it targets and never a byte outside it (asserted by
+`assert_changed_within` in the tests):
+
+- **Kit:** `set_name`, `set_voice_tone`, `set_voice_params`, and
+  `set_reverb`/`set_delay`/`set_ext_in_fx`/`set_mfx`/`set_inst_fx`.
+- **Pattern:** `set_name`, `set_tempo_bpm` (clamped 40–300), `set_kit_ref`, plus
+  the low-level `set_step_word`/`set_motion_word`.
+- **Sys:** `set_general`/`set_sound`/`set_midi`, `set_category_name`.
+
+The block-shaped structs (`VoiceParams`, `SysGeneral`/`Sound`/`Midi`,
+`ReverbParams`/`DelayParams`/`ExtInFx`) implement a **`RolandBlock`** trait —
+`from_block` / `write_to` / `LEN` — that formalises the byte-exact round-trip and
+lets one generic test prove `write_to ∘ from_block = id` for all of them. The
+types stay byte-faithful (raw `u8` fields, not enums) precisely to keep
+losslessness: a semantic view with enums/ranges belongs one layer up
+(`tr-studio`), where dropping an unknown value is harmless. `MfxParams` /
+`InstFxParams` span two sub-blocks (and carry the slot-10 truncation), so they
+keep bespoke `Kit::set_mfx`/`set_inst_fx` rather than the trait.
+
 ## Status & next steps
 
 Done (v0 crate): container magic/version, section directory, array shapes,

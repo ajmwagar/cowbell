@@ -95,7 +95,7 @@
 //!
 //! [`schema_value_size`]: crate::schema_value_size
 
-use crate::{Kit, KIT_RECORD_SIZE};
+use crate::{Kit, RolandBlock, KIT_RECORD_SIZE};
 
 // --- Record offsets (all confirmed; see the module docs) ----------------------
 
@@ -166,8 +166,16 @@ pub struct ReverbParams {
 }
 
 impl ReverbParams {
-    /// Parse from a `kitRev` block (at least 7 bytes).
-    pub fn from_block(b: &[u8]) -> ReverbParams {
+    /// The reverb type's display name.
+    pub fn type_name(&self) -> Option<&'static str> {
+        reverb_type_name(self.reverb_type)
+    }
+}
+
+impl RolandBlock for ReverbParams {
+    const LEN: usize = 7;
+
+    fn from_block(b: &[u8]) -> ReverbParams {
         ReverbParams {
             reverb_type: b[0],
             time: b[1],
@@ -179,13 +187,7 @@ impl ReverbParams {
         }
     }
 
-    /// The reverb type's display name.
-    pub fn type_name(&self) -> Option<&'static str> {
-        reverb_type_name(self.reverb_type)
-    }
-
-    /// Write back — inverse of [`ReverbParams::from_block`] (7 bytes).
-    pub fn write_to(&self, b: &mut [u8]) {
+    fn write_to(&self, b: &mut [u8]) {
         b[0] = self.reverb_type;
         b[1] = self.time;
         b[2] = self.level;
@@ -256,8 +258,22 @@ pub struct DelayParams {
 }
 
 impl DelayParams {
-    /// Parse from a `kitDly` block (at least 23 bytes).
-    pub fn from_block(b: &[u8]) -> DelayParams {
+    /// The delay type's display name.
+    pub fn type_name(&self) -> Option<&'static str> {
+        delay_type_name(self.delay_type)
+    }
+
+    /// The tape-echo mode's display name (meaningful when the type is
+    /// `TAPE ECHO`).
+    pub fn echo_mode_name(&self) -> Option<&'static str> {
+        echo_mode_name(self.echo_mode)
+    }
+}
+
+impl RolandBlock for DelayParams {
+    const LEN: usize = 23;
+
+    fn from_block(b: &[u8]) -> DelayParams {
         DelayParams {
             delay_type: b[0],
             tempo_sync: b[1],
@@ -285,19 +301,7 @@ impl DelayParams {
         }
     }
 
-    /// The delay type's display name.
-    pub fn type_name(&self) -> Option<&'static str> {
-        delay_type_name(self.delay_type)
-    }
-
-    /// The tape-echo mode's display name (meaningful when the type is
-    /// `TAPE ECHO`).
-    pub fn echo_mode_name(&self) -> Option<&'static str> {
-        echo_mode_name(self.echo_mode)
-    }
-
-    /// Write back — inverse of [`DelayParams::from_block`] (23 bytes).
-    pub fn write_to(&self, b: &mut [u8]) {
+    fn write_to(&self, b: &mut [u8]) {
         let v = [
             self.delay_type,
             self.tempo_sync,
@@ -349,9 +353,10 @@ pub struct ExtInFx {
     pub delay_send: u8,
 }
 
-impl ExtInFx {
-    /// Parse from a `kitExtIn` block (at least 7 bytes).
-    pub fn from_block(b: &[u8]) -> ExtInFx {
+impl RolandBlock for ExtInFx {
+    const LEN: usize = 7;
+
+    fn from_block(b: &[u8]) -> ExtInFx {
         ExtInFx {
             side_chain_src: b[0],
             side_chain_type: b[1],
@@ -363,8 +368,7 @@ impl ExtInFx {
         }
     }
 
-    /// Write back — inverse of [`ExtInFx::from_block`] (7 bytes).
-    pub fn write_to(&self, b: &mut [u8]) {
+    fn write_to(&self, b: &mut [u8]) {
         b[0] = self.side_chain_src;
         b[1] = self.side_chain_type;
         b[2] = self.side_chain_depth;

@@ -225,6 +225,30 @@ pub const VOICE_TONE_ID_OFFSET: usize = 0x194;
 /// Byte stride between consecutive voice blocks in a kit record.
 pub const VOICE_STRIDE: usize = 0x34;
 
+/// A fixed-size record block with a **byte-exact Roland ↔ typed** mapping.
+///
+/// [`from_block`](RolandBlock::from_block) decodes a struct of typed fields from
+/// a byte block; [`write_to`](RolandBlock::write_to) is its exact inverse,
+/// writing those fields back **in place and touching only the decoded bytes** —
+/// unknown/reserved bytes in the block are preserved, upholding the crate's
+/// losslessness contract. [`LEN`](RolandBlock::LEN) is the decoded span (the
+/// minimum block size the two operate within).
+///
+/// The types stay byte-faithful on purpose (raw `u8` fields, not enums): a rich
+/// enum would have to carry an `Unknown(u8)` for every out-of-range or reserved
+/// value to avoid losing it on write. Semantic views (enums, ranges) live one
+/// layer up (`tr-studio`) or as accessor methods (`type_name()` etc.).
+pub trait RolandBlock: Sized {
+    /// The decoded span in bytes: `from_block` reads and `write_to` fills the
+    /// range `0..LEN`.
+    const LEN: usize;
+    /// Decode from a block (must be at least [`LEN`](Self::LEN) bytes).
+    fn from_block(bytes: &[u8]) -> Self;
+    /// Write these fields back in place — the exact inverse of `from_block`,
+    /// touching only the decoded bytes within `0..LEN`.
+    fn write_to(&self, bytes: &mut [u8]);
+}
+
 /// The confirmed `instCommon` voice parameters (offsets relative to the voice
 /// block start). Named per TR Editor's `Script.xml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,9 +279,12 @@ pub struct VoiceParams {
     pub category_lock: u8,
 }
 
-impl VoiceParams {
-    /// Parse from a voice block (>= 0x0D bytes; the block is 0x34 total).
-    pub fn from_block(b: &[u8]) -> VoiceParams {
+impl RolandBlock for VoiceParams {
+    /// 13 decoded bytes (`+0x00..=0x0C`); the voice block is `0x34` total, the
+    /// rest being still-unknown reserve preserved by `write_to`.
+    const LEN: usize = 0x0d;
+
+    fn from_block(b: &[u8]) -> VoiceParams {
         VoiceParams {
             tone: u16::from_le_bytes([b[0x00], b[0x01]]),
             tune: b[0x02],
@@ -274,11 +301,7 @@ impl VoiceParams {
         }
     }
 
-    /// Write these params back into a voice block — the exact inverse of
-    /// [`VoiceParams::from_block`]. Touches only the 13 decoded bytes
-    /// (`+0x00..=0x0C`); the rest of the `0x34` block (still-unknown reserve
-    /// bytes) is left untouched, preserving the losslessness contract.
-    pub fn write_to(&self, block: &mut [u8]) {
+    fn write_to(&self, block: &mut [u8]) {
         block[0x00..0x02].copy_from_slice(&self.tone.to_le_bytes());
         block[0x02] = self.tune;
         block[0x03] = self.decay;
@@ -1591,6 +1614,36 @@ mod tests {
         assert!(p.set_kit_ref(b.raw_mut(), 42));
         assert_eq!(p.kit_ref(b.raw()), 42);
         assert_changed_within(&before, b.raw(), base + PATTERN_KIT_REF_OFFSET, 1);
+    }
+
+    /// Generic losslessness proof for any [`RolandBlock`]: decode arbitrary
+    /// bytes, encode, decode again — `write_to` must be the exact inverse of
+    /// `from_block` over `0..LEN`. One helper covers every block type, which is
+    /// the point of the trait.
+    fn assert_block_roundtrip<T: RolandBlock + PartialEq + std::fmt::Debug>() {
+        // distinct 7-bit values so each decoded field is non-trivial.
+        let src: Vec<u8> = (0..T::LEN).map(|i| ((i * 7 + 1) & 0x7f) as u8).collect();
+        let decoded = T::from_block(&src);
+        let mut buf = vec![0u8; T::LEN];
+        decoded.write_to(&mut buf);
+        assert_eq!(
+            T::from_block(&buf),
+            decoded,
+            "write_to must be the exact inverse of from_block"
+        );
+    }
+
+    #[test]
+    fn every_roland_block_round_trips_via_the_trait() {
+        use crate::fx::{DelayParams, ExtInFx, ReverbParams};
+        use crate::sys::{SysGeneral, SysMidi, SysSound};
+        assert_block_roundtrip::<VoiceParams>();
+        assert_block_roundtrip::<SysGeneral>();
+        assert_block_roundtrip::<SysSound>();
+        assert_block_roundtrip::<SysMidi>();
+        assert_block_roundtrip::<ReverbParams>();
+        assert_block_roundtrip::<DelayParams>();
+        assert_block_roundtrip::<ExtInFx>();
     }
 
     #[test]
