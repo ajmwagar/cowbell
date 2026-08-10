@@ -18,11 +18,18 @@
 //! **not** 7-bit-safe. In base-128 it carries into the next digit
 //! (`00 01 00 00`), which is. So [`RolandAddress::offset`] does base-128 add.
 //!
-//! This base-128 model, and whether each doc `step`/`block` literal is a
-//! base-128 *value* delta (as implemented) rather than a raw byte pattern, are
-//! **inferred** and want confirmation from a real RQ1/DT1 capture. The scalar
-//! base addresses themselves (e.g. `20 00 00 00`) are transcribed verbatim and
-//! are not inferred.
+//! The base-128 model is now **confirmed by a real RQ1/DT1 capture** (the
+//! compuphonic "send pattern/kit" transfer): kit 126 ("kit 127" 1-indexed) is
+//! written at `10 7e 00 00` — i.e. the 0-indexed kit number lands directly in
+//! address byte 1, and its 11 instrument records step byte 2 by 1 each
+//! (`10 7e 10 00 … 10 7e 1a 00`). That capture also **corrected** the per-record
+//! strides originally inferred from the doc's byte-pattern literals: the real
+//! deltas are the *base-128 value* of one address digit, not the doc's literal
+//! (kit block `0x4000` not `0x10000`; kit instrument step `0x80` not `0x100`;
+//! pattern block `0x40000` not `0x100000`). Constants confirmed this way are
+//! marked "CAPTURE-CONFIRMED" below; those still resting on the doc alone (tone
+//! block, tone-PCM offsets) are marked "inferred". Scalar base addresses (e.g.
+//! `20 00 00 00`) are transcribed verbatim.
 
 /// A 4-byte Roland device address (each byte 7-bit-safe, `0x00..=0x7F`).
 ///
@@ -150,22 +157,41 @@ pub const STP_NEXT_PATTERN: RolandAddress = RolandAddress::new([0x01, 0x00, 0x00
 pub const STP_PATTERN_SELECT: RolandAddress = RolandAddress::new([0x01, 0x00, 0x00, 0x1B]);
 
 // ---------------------------------------------------------------------------
-// Kit (`kit.*`) — region 0x10, per-kit block stride 0x10000
+// Kit (`kit.*`) — region 0x10, per-kit block stride 0x4000 (CAPTURE-CONFIRMED)
 // ---------------------------------------------------------------------------
 
-/// Per-kit block stride (base-128 value delta) — the doc's `block 0x10000/kit`.
-pub const KIT_BLOCK: u32 = 0x10000;
+/// Per-kit block stride (base-128 value delta). **CAPTURE-CONFIRMED**: kit 126
+/// is addressed at `10 7e 00 00`, so the 0-indexed kit number lands directly in
+/// address byte 1 (`0x4000` = one unit of that digit). The doc's `0x10000`
+/// literal was a byte-pattern, not the value delta, and is 4× too large.
+pub const KIT_BLOCK: u32 = 0x4000;
 /// Number of kits (IDs 0–127).
 pub const KIT_COUNT: u32 = 128;
 
 /// `kit.name` of kit 0 (16 bytes). Use [`kit_name`] for an arbitrary kit.
 pub const KIT_NAME: RolandAddress = RolandAddress::new([0x10, 0x00, 0x00, 0x00]);
-/// `kit.toneId` of kit 0: 11 tone-IDs (u16 each), step `0x100`.
+
+/// A kit's per-instrument record: **16 bytes each, 11 instruments**, step `0x80`
+/// (address byte 2 += 1 per instrument). **CAPTURE-CONFIRMED** — kit 126's
+/// instrument blocks land at `10 7e 10 00 … 10 7e 1a 00`, each a 16-byte DT1.
+/// The first two bytes are the [`KIT_TONE_ID`]; the remaining 14 are the device
+/// encoding of the per-voice parameters (field layout not yet decoded — the
+/// backup's `VoiceParams` is the decoded reference for the same knobs).
+/// Count 11 = the TR-8S instrument count; a TR-6S populates 6.
+pub const KIT_INSTRUMENT: ArrayField = ArrayField {
+    base: RolandAddress::new([0x10, 0x00, 0x10, 0x00]),
+    size: 16,
+    step: 0x80,
+    count: 11,
+};
+
+/// `kit.toneId` of kit 0: the first 2 bytes (base-128 `u16`) of each 16-byte
+/// [`KIT_INSTRUMENT`] record, step `0x80`. **CAPTURE-CONFIRMED.**
 /// Count 11 = the TR-8S instrument count; a TR-6S populates 6.
 pub const KIT_TONE_ID: ArrayField = ArrayField {
     base: RolandAddress::new([0x10, 0x00, 0x10, 0x00]),
     size: 2,
-    step: 0x100,
+    step: 0x80,
     count: 11,
 };
 
@@ -183,12 +209,25 @@ pub fn kit_tone_ids(i: u32) -> Option<ArrayField> {
     })
 }
 
+/// The 11 × 16-byte [`KIT_INSTRUMENT`] records for kit `i` (`0..KIT_COUNT`),
+/// already shifted by the per-kit block. Index them with [`ArrayField::nth`].
+pub fn kit_instruments(i: u32) -> Option<ArrayField> {
+    (i < KIT_COUNT).then(|| ArrayField {
+        base: KIT_INSTRUMENT.base.offset(KIT_BLOCK.wrapping_mul(i)),
+        ..KIT_INSTRUMENT
+    })
+}
+
 // ---------------------------------------------------------------------------
-// Pattern (`ptn.*`) — region 0x20, per-pattern block stride 0x100000
+// Pattern (`ptn.*`) — region 0x20, per-pattern block stride 0x40000 (CAPTURE-CONFIRMED)
 // ---------------------------------------------------------------------------
 
-/// Per-pattern block stride (base-128 value delta) — `block 0x100000/pattern`.
-pub const PATTERN_BLOCK: u32 = 0x100000;
+/// Per-pattern block stride (base-128 value delta). **CAPTURE-CONFIRMED**:
+/// consecutive patterns step address byte 1 by `0x10` (`20 00 00 00` →
+/// `20 10 00 00`), i.e. 8 patterns per region byte, rolling `0x20 → 0x21 → …`.
+/// `0x40000` is that `0x10`-in-byte-1 delta; the doc's `0x100000` literal was 4×
+/// too large.
+pub const PATTERN_BLOCK: u32 = 0x40000;
 /// Number of patterns (IDs 0–127).
 pub const PATTERN_COUNT: u32 = 128;
 

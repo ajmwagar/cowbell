@@ -7,15 +7,22 @@
 //!
 //! ## Scope (and what maps to `tr-format`)
 //!
-//! The device map covers **summary/browse** fields, not the full parameter set:
-//! there are no per-voice `VoiceParams`, FX blocks, or step words at known device
-//! addresses. So a *full* [`tr_format::Kit`]/`Pattern`/`Sys` reconstruction over
-//! SysEx is **not yet possible** — it needs the complete device parameter map
-//! (from a full-record capture or TR Editor's param table; tracked separately).
-//! Where a field does correspond to a `tr-format` concept the types line up (a
-//! device category name is the same string as `tr_format::Sys::category_name`, a
-//! tone id indexes the same tone table), but the values here are plain
-//! strings/ints on purpose — no lossy struct is fabricated from partial data.
+//! The device map covers **summary/browse** fields plus the raw per-voice
+//! instrument records, but not yet the full decoded parameter set. The
+//! "send pattern/kit" capture located each kit's **11 × 16-byte instrument
+//! blocks** at known addresses ([`crate::address::KIT_INSTRUMENT`],
+//! surfaced by [`DeviceConfig::read_kit_instruments`]) — but the 14 param bytes
+//! after the tone id are still an **undecoded device encoding**; the backup's
+//! `VoiceParams` is the decoded reference for the same knobs. Pattern **step
+//! words** and **FX** blocks have no confirmed device addresses (that capture
+//! transferred only pattern headers — name + kit reference). So a *full*
+//! byte-exact [`tr_format::Kit`]/`Pattern`/`Sys` reconstruction over SysEx is
+//! **not yet possible**; it needs the instrument-block field decode and a
+//! step/FX capture (tracked separately). Where a field does correspond to a
+//! `tr-format` concept the types line up (a device category name is the same
+//! string as `tr_format::Sys::category_name`, a tone id indexes the same tone
+//! table), but the values here are plain strings/ints/bytes on purpose — no
+//! lossy struct is fabricated from partial data.
 
 use anyhow::{ensure, Result};
 
@@ -38,6 +45,18 @@ pub struct DevicePattern {
     /// The kit slot this pattern references (`ptn.kitReference`, a `u16` on the
     /// device).
     pub kit_reference: u16,
+}
+
+/// One instrument slot of a kit, as it lives on the device: a 16-byte record
+/// whose first two bytes are the tone id. The remaining bytes are the device's
+/// (still undecoded) encoding of the per-voice parameters — kept raw rather than
+/// forced into a lossy struct. See [`crate::address::KIT_INSTRUMENT`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceInstrument {
+    /// `kit.toneId` — indexes the same tone table as `tr_format`.
+    pub tone_id: u16,
+    /// The full 16-byte record exactly as returned by the device.
+    pub raw: [u8; 16],
 }
 
 /// The current tone's browse fields.
@@ -95,6 +114,37 @@ impl DeviceConfig {
             category: self.read_u8(port, address::TONE_CATEGORY)?,
             tone_type: self.read_u8(port, address::TONE_TYPE)?,
         })
+    }
+
+    /// The 11 per-voice instrument records of **persistent kit slot** `kit`
+    /// (`0..128`). Each is a 16-byte record; the tone id is decoded, the rest is
+    /// returned raw (its field layout is not yet mapped — see the module scope
+    /// note). Returns `None` if `kit >= 128`.
+    pub fn read_kit_instruments(
+        &self,
+        port: &mut dyn MidiPort,
+        kit: u32,
+    ) -> Result<Option<Vec<DeviceInstrument>>> {
+        let Some(field) = address::kit_instruments(kit) else {
+            return Ok(None);
+        };
+        let mut out = Vec::with_capacity(field.count as usize);
+        for i in 0..field.count {
+            let addr = field.nth(i).expect("i < count");
+            let bytes = self.read(port, addr, field.size)?;
+            ensure!(
+                bytes.len() == 16,
+                "instrument record {i}: expected 16 bytes, got {}",
+                bytes.len()
+            );
+            let mut raw = [0u8; 16];
+            raw.copy_from_slice(&bytes);
+            out.push(DeviceInstrument {
+                tone_id: decode_base128(&raw[0..2]) as u16,
+                raw,
+            });
+        }
+        Ok(Some(out))
     }
 
     /// All user category names (`sys.categoryName`, 32 × 16 bytes).
@@ -207,6 +257,30 @@ mod tests {
         let names = cfg.read_category_names(&mut port2).unwrap();
         assert_eq!(names.len(), 32);
         assert!(names.iter().all(|n| n == "USER"));
+    }
+
+    #[test]
+    fn reads_kit_instruments_decoding_tone_ids() {
+        let cfg = DeviceConfig::tr8s(0x10);
+        // Answer each instrument read with a 16-byte record whose first two
+        // bytes encode tone id = (address byte 2 - 0x10) in base-128.
+        let mut port = dev(|addr, _len| {
+            let inst = (addr.bytes()[2] - 0x10) as u16;
+            let mut v = vec![0u8; 16];
+            v[0] = (inst >> 7) as u8;
+            v[1] = (inst & 0x7f) as u8;
+            v[15] = 0xAB; // a param byte we keep raw
+            v
+        });
+        let insts = cfg.read_kit_instruments(&mut port, 126).unwrap().unwrap();
+        assert_eq!(insts.len(), 11);
+        assert_eq!(
+            insts.iter().map(|d| d.tone_id).collect::<Vec<_>>(),
+            (0..11).collect::<Vec<_>>()
+        );
+        assert!(insts.iter().all(|d| d.raw[15] == 0xAB));
+        // Out-of-range kit yields None, not an error.
+        assert!(cfg.read_kit_instruments(&mut port, 128).unwrap().is_none());
     }
 
     #[test]

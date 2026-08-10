@@ -605,6 +605,46 @@ mod tests {
     }
 
     #[test]
+    fn strides_match_the_send_pattern_capture() {
+        // Attested addresses from the compuphonic "send pattern/kit" transfer.
+        // Kit 126 ("kit 127" 1-indexed) name + its 11 instrument records:
+        assert_eq!(
+            address::kit_name(126).unwrap().bytes(),
+            [0x10, 0x7e, 0x00, 0x00]
+        );
+        let insts = address::kit_instruments(126).unwrap();
+        for i in 0..11 {
+            assert_eq!(
+                insts.nth(i).unwrap().bytes(),
+                [0x10, 0x7e, 0x10 + i as u8, 0x00],
+                "kit-126 instrument {i}"
+            );
+        }
+        // Consecutive patterns step address byte 1 by 0x10; #8 rolls to region 0x21.
+        assert_eq!(
+            address::pattern_name(0).unwrap().bytes(),
+            [0x20, 0x00, 0x00, 0x00]
+        );
+        assert_eq!(
+            address::pattern_name(1).unwrap().bytes(),
+            [0x20, 0x10, 0x00, 0x00]
+        );
+        assert_eq!(
+            address::pattern_name(8).unwrap().bytes(),
+            [0x21, 0x00, 0x00, 0x00]
+        );
+        // Pattern field offsets (kitReference, kitReferenceSw) are verbatim.
+        assert_eq!(
+            address::PATTERN_KIT_REFERENCE.bytes(),
+            [0x20, 0x00, 0x00, 0x14]
+        );
+        assert_eq!(
+            address::PATTERN_KIT_REFERENCE_SW.bytes(),
+            [0x20, 0x00, 0x01, 0x06]
+        );
+    }
+
+    #[test]
     fn address_value_round_trips_base128() {
         let a = RolandAddress::new([0x20, 0x40, 0x7F, 0x03]);
         assert_eq!(RolandAddress::from_value(a.to_value()), a);

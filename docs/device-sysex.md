@@ -79,9 +79,10 @@ ARIA JS config. Addresses are 4-byte `[hi..lo]`; `step`/`count` describe arrays;
 | `stp.currentPattern` | `01 00 00 01` | 1 | |
 | `stp.nextPattern` | `01 00 00 02` | 1 | |
 | `stp.patternSelect` | `01 00 00 1B` | 4 | |
-| `kit.name` | `10 00 00 00` | 16 | block `0x10000`/kit |
-| `kit.toneId` | `10 00 10 00` | (u16) | ×**11** @ step `0x100` |
-| `ptn.name` | `20 00 00 00` | 16 | block `0x100000`/pattern |
+| `kit.name` | `10 00 00 00` | 16 | block `0x4000`/kit † |
+| `kit.instrument` | `10 00 10 00` | **16** | ×**11** @ step `0x80` † |
+| `kit.toneId` | `10 00 10 00` | (u16) | first 2 bytes of `kit.instrument` † |
+| `ptn.name` | `20 00 00 00` | 16 | block `0x40000`/pattern † |
 | `ptn.kitReference` | `20 00 00 14` | 2 | |
 | `ptn.kitReferenceSw` | `20 00 01 06` | 1 | |
 | `tone.name` | `30 00 00 00` | 16 | block `0x10000`/tone |
@@ -96,6 +97,31 @@ Address regions: `0x01` step/system, `0x10` kit, `0x20` pattern, `0x30` tone
 metadata, `0x40` tone PCM (sample refs), `0x50` utility. Persistent slots are the
 same fields at slot-offset base addresses (the JS walks them via an `offsets`
 table + `offsetAddress`).
+
+**† Confirmed and corrected by a real transfer capture.** The compuphonic
+"send pattern/kit" MIDI-Monitor capture is attested wire traffic (DT1 writes to a
+device). It resolves the earlier ambiguity in the `block`/`step` literals — those
+JS numbers are *byte-patterns*, and the real on-wire delta is the **base-128
+value of one address digit**, which is 4× smaller:
+
+- **Kit slot** → the 0-indexed kit number lands directly in address byte 1: kit
+  126 ("kit 127" 1-indexed) is written at `10 7e 00 00`. Per-kit delta `0x4000`,
+  not `0x10000`.
+- **Kit instrument record** → 11 blocks of **16 bytes** (not a bare `u16` tone
+  id), stepping address byte 2 by 1: `10 7e 10 00 … 10 7e 1a 00`. The tone id is
+  the first two bytes; the remaining 14 are the device's per-voice parameter
+  encoding (not yet field-decoded — the backup `VoiceParams` is the decoded
+  reference for the same knobs).
+- **Pattern slot** → address byte 1 steps by `0x10` per pattern (`20 00 00 00` →
+  `20 10 00 00`), 8 patterns per region byte, rolling `0x20 → 0x21 → …`. Per-
+  pattern delta `0x40000`, not `0x100000`. This capture transferred only pattern
+  **headers** (name + `kitReference` + `kitReferenceSw`); pattern **step words**
+  and **FX** blocks were not in it and have no confirmed device address yet.
+
+`tone.*` strides are still on the doc/JS literal alone — no tone region appeared
+in this capture. `tr-sysex`'s `address` module carries the corrected values and a
+regression test (`strides_match_the_send_pattern_capture`) pins these exact
+attested addresses.
 
 ### These are NOT the editor/backup addresses (a discrepancy to respect)
 
