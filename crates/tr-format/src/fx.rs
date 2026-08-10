@@ -148,6 +148,7 @@ pub fn echo_mode_name(t: u8) -> Option<&'static str> {
 /// `kitRev` — the kit's reverb send effect. Seven bytes at
 /// [`KIT_REVERB_OFFSET`], then 33 bytes of reserve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReverbParams {
     /// `REVERB TYPE` (0–6) — index into [`REVERB_TYPES`]. Default 2 (`HALL1`).
     pub reverb_type: u8,
@@ -208,6 +209,7 @@ impl RolandBlock for ReverbParams {
 /// so its two bytes read `0` — below their documented ranges. They are exposed
 /// raw rather than interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DelayParams {
     /// `DELAY TYPE` (0–3) — index into [`DELAY_TYPES`].
     pub delay_type: u8,
@@ -336,6 +338,7 @@ impl RolandBlock for DelayParams {
 /// `kitExtIn` — the external audio input's gain/pan and its FX sends. Seven
 /// bytes at [`KIT_EXT_IN_OFFSET`], then 33 bytes of reserve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExtInFx {
     /// `SideChainSrc` (0–11).
     pub side_chain_src: u8,
@@ -470,6 +473,7 @@ fn out_of_range(
 
 /// `kitMfxCommon` + `kitMfxShare` — the kit-wide master effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MfxParams {
     /// `kitMfxCommon.Type` (0–20) — index into [`MFX_TYPES`]. Default 11 (`HPF`).
     pub fx_type: u8,
@@ -513,6 +517,7 @@ impl MfxParams {
 
 /// `instFxCommon[i]` + `instFxShare[i]` — one instrument's insert effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InstFxParams {
     /// Instrument slot (0–10, TR-8S panel order).
     pub slot: usize,

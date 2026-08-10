@@ -947,6 +947,19 @@ losslessness: a semantic view with enums/ranges belongs one layer up
 `InstFxParams` span two sub-blocks (and carry the slot-10 truncation), so they
 keep bespoke `Kit::set_mfx`/`set_inst_fx` rather than the trait.
 
+### JSON/serde (`serde` feature)
+
+The value structs derive `Serialize`/`Deserialize` behind an off-by-default
+`serde` feature, so any decoded record serialises to JSON/TOML for human editing
+and diffing. **JSON is a known-fields view, not a byte-exact one:** it carries
+the decoded fields only, so it is *lossy* for a record's unknown/reserved bytes.
+That is deliberate — the losslessness guarantee lives in the binary layer (edit
+via the write API on the retained bytes), and JSON exists for readability and
+diffs. Round-tripping *through JSON* (`typed → JSON → typed`) is exact on the
+known fields; round-tripping a whole record *through JSON back to a device
+backup* should go binary→edit→binary, not JSON→binary, to preserve the unknown
+bytes. The aggregate export/import documents and CLI live in `tr-studio`.
+
 ## Status & next steps
 
 Done (v0 crate): container magic/version, section directory, array shapes,

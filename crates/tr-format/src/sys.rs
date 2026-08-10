@@ -101,6 +101,7 @@ pub const SYS_ASSIGNS: usize = 6;
 /// `Tempo` reads its exact default `1250` as a little-endian `u16` across the
 /// two bytes the `int4x4` rule predicts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SysGeneral {
     /// `LCD Contrast`, 0–9 (default 4).
     pub lcd_contrast: u8,
@@ -253,6 +254,7 @@ impl RolandBlock for SysGeneral {
 
 /// `sysSound` — output routing and external-input mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SysSound {
     /// `Local Sw`, 0–2 (default 1).
     pub local_sw: u8,
@@ -288,6 +290,7 @@ impl RolandBlock for SysSound {
 /// `sysMidi` — MIDI channels, per-instrument note assignments, and the TX/RX
 /// filter switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SysMidi {
     /// `Device ID`, 0–15.
     pub device_id: u8,

@@ -20,6 +20,7 @@ rust-version = "1.74"
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 
 [profile.release]
 opt-level = 3

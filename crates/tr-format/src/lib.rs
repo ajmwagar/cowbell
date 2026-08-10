@@ -252,6 +252,7 @@ pub trait RolandBlock: Sized {
 /// The confirmed `instCommon` voice parameters (offsets relative to the voice
 /// block start). Named per TR Editor's `Script.xml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VoiceParams {
     /// Tone ID (u16, 0–1023) — index into the `TONE` table.
     pub tone: u16,
@@ -508,6 +509,7 @@ pub fn schema_value_size(ty: &str, range_max: u32) -> Option<usize> {
 /// (a grace note, spaced by the pattern's `FLAM SPACING`). See
 /// [`StepWord::sub_step`] and `docs/tr-format.md` for the evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SubStep {
     /// Grace note before the beat; spacing comes from `ptnCmn.FLAM SPACING`.
     Flam,
@@ -574,6 +576,7 @@ pub const STEP_ALTERNATE_MASK: u8 = 0x80;
 /// appears to be a later-firmware feature. The setters below preserve those
 /// bits, so editing a step can never destroy them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StepWord {
     pub raw: [u8; 4],
 }
@@ -673,6 +676,7 @@ pub const PATTERN_TRIGGER_TRACK: usize = 11;
 /// backup: the motion slots for unused voices are zero and the step slots are
 /// the ones that read as musical patterns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TrackRole {
     /// `ptnVar01`…`ptnVar11` — `INSTnn PTNnn` step words for instrument `0..11`.
     Inst(usize),
@@ -742,6 +746,7 @@ pub fn motion_lane_name(track: usize, lane: usize) -> Option<&'static str> {
 /// across slots, so [`MotionWord::lane_recorded`] returns `None` for it rather
 /// than guessing. Tune and Ctrl are bipolar with centre 128 (`<offset>128`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MotionWord {
     pub raw: [u8; 4],
 }
@@ -1644,6 +1649,71 @@ mod tests {
         assert_block_roundtrip::<ReverbParams>();
         assert_block_roundtrip::<DelayParams>();
         assert_block_roundtrip::<ExtInFx>();
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_json_round_trips_the_value_types() {
+        fn rt<T>()
+        where
+            T: RolandBlock
+                + serde::Serialize
+                + serde::de::DeserializeOwned
+                + PartialEq
+                + std::fmt::Debug,
+        {
+            let src: Vec<u8> = (0..T::LEN).map(|i| ((i * 7 + 1) & 0x7f) as u8).collect();
+            let v = T::from_block(&src);
+            let json = serde_json::to_string(&v).unwrap();
+            assert_eq!(serde_json::from_str::<T>(&json).unwrap(), v);
+        }
+        use crate::fx::{
+            DelayParams, ExtInFx, InstFxParams, MfxParams, ReverbParams, FX_PRM_COUNT,
+        };
+        use crate::sys::{SysGeneral, SysMidi, SysSound};
+        rt::<VoiceParams>();
+        rt::<SysGeneral>();
+        rt::<SysSound>();
+        rt::<SysMidi>();
+        rt::<ReverbParams>();
+        rt::<DelayParams>();
+        rt::<ExtInFx>();
+
+        // types without RolandBlock: spot-check directly.
+        let sw = StepWord {
+            raw: [80, 2, 0, 0x80],
+        };
+        assert_eq!(
+            serde_json::from_str::<StepWord>(&serde_json::to_string(&sw).unwrap()).unwrap(),
+            sw
+        );
+        let mw = MotionWord { raw: [1, 2, 3, 4] };
+        assert_eq!(
+            serde_json::from_str::<MotionWord>(&serde_json::to_string(&mw).unwrap()).unwrap(),
+            mw
+        );
+        assert_eq!(serde_json::to_string(&SubStep::Flam).unwrap(), "\"Flam\"");
+        let mfx = MfxParams {
+            fx_type: 3,
+            switch: true,
+            ctrl: 5,
+            prm: [7u8; FX_PRM_COUNT],
+        };
+        assert_eq!(
+            serde_json::from_str::<MfxParams>(&serde_json::to_string(&mfx).unwrap()).unwrap(),
+            mfx
+        );
+        let ifx = InstFxParams {
+            slot: 2,
+            fx_type: 5,
+            ctrl: 9,
+            prm: [1u8; FX_PRM_COUNT],
+            prm_available: FX_PRM_COUNT,
+        };
+        assert_eq!(
+            serde_json::from_str::<InstFxParams>(&serde_json::to_string(&ifx).unwrap()).unwrap(),
+            ifx
+        );
     }
 
     #[test]
