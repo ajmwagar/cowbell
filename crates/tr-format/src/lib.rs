@@ -35,6 +35,7 @@
 //! motion flags byte — see `docs/tr-format.md`.
 
 pub mod fx;
+pub mod pcm;
 pub mod sys;
 
 use anyhow::{bail, Context, Result};
@@ -74,7 +75,7 @@ pub const CHUNK_HEADER_LEN: usize = 16;
 /// keeps 16-char name fields like `USER01` — which live *inside* the `SYS `
 /// payload — from being mistaken for chunks.
 const KNOWN_TAGS: &[&[u8; 4]] = &[
-    b"SYS ", b"PTN ", b"KIT ", b"SMPL", b"FX  ", b"SONG", b"TONE",
+    b"SYS ", b"PTN ", b"KIT ", b"SMPL", b"FX  ", b"SONG", b"TONE", b"PCMT",
 ];
 
 /// One tagged chunk located within a backup.

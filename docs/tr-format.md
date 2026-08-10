@@ -166,6 +166,58 @@ schema shipped as `Contents/Resources/Script/Script.xml` (794 KB, ~27.8k lines):
 (`kit`=`03 00 00 00`, `ptn`=`04 00 00 00`). This XML is the definitive map for
 the remaining records (patterns, FX, SYS) — parse it, don't guess.
 
+## User samples — `PCMT` records + the `SMPL` region — SOLVED (layout)
+
+User samples live in two chunks. **`SMPL`** is a *zero-length header* whose
+`extra` field declares the reserved PCM region size (`0x330_0000` ≈ 51 MB on the
+TR-6S); the raw audio blob follows it, which is why a sample-loaded backup is
+tens of MB. **`PCMT`** is a flat table of **1024 × 64-byte** records
+(`tonePcm`) — the backup analogue of the device's SysEx `tone.*` PCM region
+(`0x40`; see `docs/device-sysex.md`).
+
+**Record layout (64 B), from `Script.xml`'s `tonePcm` struct.** Field widths
+follow the type names (`int8x4`→32-bit/4 B, `int4x4`→16-bit/2 B, `int1x7`→7-bit
+/1 B); the widths sum to exactly 64, matching the observed stride.
+
+| off | field | type | meaning |
+| --- | ----- | ---- | ------- |
+| `0x00` | `Address` | int8x4 | PCM offset of the sample (L) in the `SMPL` region |
+| `0x04` | `AddressRight` | int8x4 | PCM offset (R), for stereo |
+| `0x08` | `Size` | int8x4 | the sample's stored length |
+| `0x0C` | `Start` | int8x4 | **playback window start — the slice in-point** |
+| `0x10` | `End` | int8x4 | **playback window end — the slice out-point** |
+| `0x14` | `EndMax` | int8x4 | full playable length (window upper bound) |
+| `0x18` | `SamplingFrequency` | int8x4 | sample rate |
+| `0x1C` | `Channel` | int1x7 | mono/stereo (`0..2`) |
+| `0x1D` | `Gain` | int1x7 | level (`0..36`) |
+| `0x1E` | `Reserve0` | int4x4 | reserved |
+| `0x20` | `ToneId0..3` | int8x4×4 | the tone slot(s) that use this record |
+| `0x30` | `Reserve1_0..3` | int8x4×4 | reserved |
+
+**Cross-validated independently:** in the device's *wire* form each `int8x4` is
+8 bytes (7-bit-safe digits), which places `Channel` at `0x38` — exactly where
+`docs/device-sysex.md` documents `tone.channel`. So the field *order* is attested
+from two directions (schema + device map), not just one.
+
+**Why this is the slicer's foundation (cowbell-7po).** `Start`/`End` are
+independent of `Address`/`Size`: a record plays a *window* of a sample, not the
+whole thing. So **several records can share one `Address` with different
+`Start`/`End`** — one uploaded break, windowed into N slices, with *zero audio
+duplication*. `tr-format`'s `pcm` module exposes this: `Backup::pcm_tone(i)`,
+`pcm_tones()`, and the length-preserving `set_pcm_tone_window(i, start, end)` /
+`set_pcm_tone_address(i, …)` slice edits. Adding `PCMT` to the recognised tags is
+round-trip-verified on the real 56 MB backup (all six chunks enumerated, bytes
+unchanged).
+
+**Confidence.** The record *layout* (offsets, widths, order) is schema-attested
+and device-cross-validated — high. Not yet confirmed on populated data: the
+numeric encoding of the 4-byte `int8x4` fields is taken as little-endian `u32`
+(the container's convention for every other multi-byte field), and whether tone
+slot maps 1:1 onto record index or sits behind a small preamble — the only
+backup on hand has **no user samples** (record 0 reads as non-empty from stale/
+preamble bytes). Both want a sample-loaded backup to nail end-to-end; neither
+affects the layout above.
+
 ## Effects — there is no `FX  ` section
 
 **Status: decoded, inside the kit record.** The container has no FX chunk at
