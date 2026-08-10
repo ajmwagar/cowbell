@@ -324,6 +324,110 @@ pub fn apply_breakbeat(
     Ok(mapped)
 }
 
+// ---------------------------------------------------------------------------
+// Shared-PCM windowing (cowbell-7po.3)
+// ---------------------------------------------------------------------------
+//
+// The elegant path: import the break *once* as a single user sample, then make
+// each slice a `PCMT` record that points at the SAME PCM `Address` with a
+// different `Start`/`End` window. One upload, N slices, zero audio duplication.
+//
+// The window mapping is **proportional to the source's `EndMax`** (its full
+// playable length), so it is unit-agnostic — it does the right thing whether
+// the device measures `Start`/`End` in frames or in bytes, sidestepping that
+// still-unconfirmed detail.
+//
+// What this DOES prove (round-trip within our own tooling): N records can be
+// written to share one `Address` with distinct windows, losslessly. What it does
+// NOT yet prove — and cannot without a sample-loaded reference backup or a
+// device — the box *accepts* multiple records/tones sharing an `Address`, the
+// `int8x4` numeric encoding (taken as LE `u32`), and how a fresh `TONE`-table
+// entry is created for each slice tone. Those are the residual gates; this is
+// the computation underneath them.
+
+/// One planned shared-PCM slice: the `PCMT` record to write and its window
+/// (`start`/`end`) over the source sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedWindow {
+    /// `PCMT` record index to write.
+    pub record_index: usize,
+    /// Playback window start, in the source sample's native units.
+    pub start: u32,
+    /// Playback window end.
+    pub end: u32,
+}
+
+/// Map a [`SlicePlan`]'s frame windows onto a source sample of length `extent`
+/// (its `EndMax`), writing into `slice_records`. Proportional, so unit-agnostic.
+/// Errors if `slice_records` is shorter than the plan or `extent`/frames is 0.
+pub fn plan_shared_pcm(
+    extent: u32,
+    plan: &SlicePlan,
+    slice_records: &[usize],
+) -> Result<Vec<SharedWindow>> {
+    let n = plan.slices.len();
+    ensure!(
+        slice_records.len() >= n,
+        "need a PCMT record per slice ({n} slices, {} records)",
+        slice_records.len()
+    );
+    ensure!(extent > 0 && plan.total_frames > 0, "empty source or plan");
+    let total = plan.total_frames as u64;
+    let ext = extent as u64;
+    let map = |frame: usize| -> u32 { ((frame as u64 * ext) / total) as u32 };
+    Ok(plan
+        .slices
+        .iter()
+        .zip(slice_records)
+        .map(|(s, &rec)| SharedWindow {
+            record_index: rec,
+            start: map(s.start_frame),
+            end: map(s.end_frame),
+        })
+        .collect())
+}
+
+/// Window one already-imported break into N shared-PCM slice records on
+/// `project`: every `slice_records[i]` is pointed at the source sample's PCM
+/// `Address` with slice `i`'s window. The break's audio is stored once (in the
+/// `source_record`); nothing is duplicated.
+///
+/// Length-preserving. Returns the windows written. Pair with [`apply_breakbeat`]
+/// (kit assignment + flip) using the same tone IDs. See the residual gates in
+/// this module's shared-PCM section — this is unverified on a real device.
+pub fn apply_shared_pcm(
+    project: &mut Project,
+    source_record: usize,
+    plan: &SlicePlan,
+    slice_records: &[usize],
+) -> Result<Vec<SharedWindow>> {
+    let src = project
+        .backup()
+        .pcm_tone(source_record)
+        .ok_or_else(|| anyhow::anyhow!("source PCMT record {source_record} not found"))?;
+    let extent = if src.end_max > 0 {
+        src.end_max
+    } else {
+        src.size
+    };
+    let (addr, addr_r) = (src.address, src.address_right);
+    let windows = plan_shared_pcm(extent, plan, slice_records)?;
+    let backup = project.backup_mut();
+    for w in &windows {
+        ensure!(
+            backup.set_pcm_tone_address(w.record_index, addr, addr_r),
+            "PCMT record {} out of range",
+            w.record_index
+        );
+        ensure!(
+            backup.set_pcm_tone_window(w.record_index, w.start, w.end),
+            "PCMT record {} out of range",
+            w.record_index
+        );
+    }
+    Ok(windows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +462,69 @@ mod tests {
         v.extend_from_slice(&0u32.to_le_bytes());
         v.extend_from_slice(&vec![0u8; PATTERN_RECORD_SIZE]);
         v
+    }
+
+    /// A backup with a `PCMT` chunk of `records` 64-byte entries; record 0 is a
+    /// "source" sample (address `addr`, EndMax `extent`), the rest are spare.
+    fn backup_with_pcmt(records: usize, addr: u32, extent: u32) -> Vec<u8> {
+        const ENTRY: usize = 0x40;
+        let mut v = synthetic_backup();
+        let payload = (records * ENTRY) as u32;
+        v.extend_from_slice(b"PCMT");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&payload.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        let mut recs = vec![0u8; records * ENTRY];
+        recs[0x00..0x04].copy_from_slice(&addr.to_le_bytes()); // Address
+        recs[0x08..0x0C].copy_from_slice(&extent.to_le_bytes()); // Size
+        recs[0x14..0x18].copy_from_slice(&extent.to_le_bytes()); // EndMax
+        v.extend_from_slice(&recs);
+        v
+    }
+
+    #[test]
+    fn shared_pcm_windows_share_one_address() {
+        // Source record 0 holds the break (addr 0x1000, full length 0x8000).
+        // Records 1..=4 become the four slices.
+        let raw = backup_with_pcmt(5, 0x1000, 0x8000);
+        let mut project = Project::open(raw).unwrap();
+        let plan = slice_grid(&ramp_wav(64), 4).unwrap(); // 4 windows: 0,16,32,48,64
+        let slice_records = [1usize, 2, 3, 4];
+
+        let windows = apply_shared_pcm(&mut project, 0, &plan, &slice_records).unwrap();
+        assert_eq!(windows.len(), 4);
+
+        // Proportional to EndMax 0x8000 over 64 frames -> 0x2000 per quarter.
+        let src_addr = project.backup().pcm_tone(0).unwrap().address;
+        for (i, w) in windows.iter().enumerate() {
+            let rec = project.backup().pcm_tone(w.record_index).unwrap();
+            assert_eq!(rec.address, src_addr, "slice {i} shares the source address");
+            assert_eq!(
+                (rec.start, rec.end),
+                (i as u32 * 0x2000, (i as u32 + 1) * 0x2000)
+            );
+        }
+        // The source itself is untouched.
+        assert_eq!(project.backup().pcm_tone(0).unwrap().start, 0);
+
+        // Length-preserving + CRC valid after save.
+        let bytes = project.save();
+        assert!(Project::open(bytes).unwrap().backup().header_crc_valid());
+    }
+
+    #[test]
+    fn shared_pcm_plan_is_unit_agnostic_and_validated() {
+        let plan = slice_grid(&ramp_wav(100), 4).unwrap();
+        // extent in "bytes" vs "frames" both map proportionally.
+        let a = plan_shared_pcm(1000, &plan, &[0, 1, 2, 3]).unwrap();
+        assert_eq!(a[0].start, 0);
+        assert_eq!(a[3].end, 1000); // last window reaches the full extent
+                                    // too few records / empty extent are rejected.
+        assert!(plan_shared_pcm(1000, &plan, &[0, 1]).is_err());
+        assert!(plan_shared_pcm(0, &plan, &[0, 1, 2, 3]).is_err());
+        // missing source record is an error.
+        let mut p = Project::open(synthetic_backup()).unwrap();
+        assert!(apply_shared_pcm(&mut p, 0, &plan, &[1, 2, 3, 4]).is_err());
     }
 
     #[test]

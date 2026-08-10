@@ -15,7 +15,8 @@ mod project;
 mod slicer;
 pub use project::{KitInfo, PatternInfo, Project, SampleSlice, ToneInfo, VoiceInfo};
 pub use slicer::{
-    apply_breakbeat, export_slices, slice_grid, BreakbeatSpec, Slice, SlicePlan, Wav, MAX_SLICES,
+    apply_breakbeat, apply_shared_pcm, export_slices, plan_shared_pcm, slice_grid, BreakbeatSpec,
+    SharedWindow, Slice, SlicePlan, Wav, MAX_SLICES,
 };
 
 /// Step tracks 0..6 are the six audible voices (BD/SD/LT/HC/CH/OH); verified
