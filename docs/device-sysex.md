@@ -182,3 +182,28 @@ Next: capture our own RQ1/DT1 exchange against a device to confirm the `modelId`
 bytes and checksum end-to-end, and map the persistent-slot base addresses. A
 clean-room Rust implementation over `tr-format`'s typed model would then give
 direct device I/O.
+
+## Corroboration — the universal Roland RQ1/DT1 spec
+
+Roland's RQ1/DT1 is a **universal** scheme, unchanged since the GS era, so a
+generic reference independently confirms the parts of this protocol that are not
+TR-specific. Glenn Meader's
+[Roland SysEx primer](http://www.chromakinetics.com/handsonic/rolSysEx.htm)
+(written for the JV-1010) confirms, from a source unrelated to our capture or to
+TR Editor:
+
+- the framing `F0 41 <dev> <model> <cmd> <addr> <data|size> <checksum> F7`;
+- **RQ1 = `0x11`** ("Data Request 1"), **DT1 = `0x12`** ("Data Set 1"); default
+  device ID **`0x10`**;
+- the **checksum** as "sum the address + data/size bytes, take the remainder mod
+  128, subtract from 128 (128 → 0)" — identical to
+  `(0x80 − (sum & 0x7F)) & 0x7F`, with worked examples;
+- **RQ1 carries a 4-byte size/count** (`F0 41 10 6A 11 00 00 00 01 …` requests
+  one byte) — corroborating our 4-byte length field;
+- the **model ID is per-device** (JV-1010 = `6A`, generic Roland = `42`), which
+  is why the TR-6S/TR-8S model bytes remain legitimately unknown until captured.
+
+So the framing, command bytes, checksum, device ID, and the RQ1 size-field width
+are confirmed *twice over* (this spec + our capture); only the **TR model ID**
+and the **7-bit *packing layout*** of multi-byte data still need a real device
+capture.

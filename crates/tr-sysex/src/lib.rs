@@ -228,9 +228,11 @@ impl DeviceConfig {
     /// Build an **RQ1** (read request): "give me `len` bytes at `address`".
     ///
     /// The requested length is encoded as a 4-byte base-128 value, mirroring the
-    /// address width. That 4-byte width is the standard Roland RQ1 form but is
-    /// **inferred** here (the doc says "address + length" without pinning the
-    /// field width); confirm against a capture.
+    /// address width. This 4-byte size field is the standard modern Roland RQ1
+    /// form — corroborated by the universal RQ1/DT1 spec (Glenn Meader's Roland
+    /// SysEx reference: a 4-byte address + 4-byte count) and by the ARIA device
+    /// capture, which uses 4-byte addresses. A TR-specific capture would make it
+    /// airtight, but it is no longer a bare guess.
     pub fn build_rq1(&self, address: RolandAddress, len: u32) -> Vec<u8> {
         let len_field = RolandAddress::from_value(len).bytes();
         self.frame(CMD_RQ1, address, &len_field)
