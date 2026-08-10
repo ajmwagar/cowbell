@@ -44,14 +44,18 @@ pub struct KitInfo {
     pub voices: [VoiceInfo; 6],
 }
 
-/// A tone-table entry: id, name, and whether it is a user (imported-sample)
-/// tone versus a factory preset.
+/// A tone-table entry: id, name, category/type, and whether it is a user
+/// (imported-sample) tone versus a factory preset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToneInfo {
     /// Tone ID.
     pub id: u16,
     /// Tone name.
     pub name: String,
+    /// Category (`0..=52`).
+    pub category: u8,
+    /// Type (`0..=3`).
+    pub tone_type: u8,
     /// `true` for user tones (`id >= USER_TONE_ID_MIN`).
     pub is_user: bool,
 }
@@ -186,17 +190,26 @@ impl Project {
     pub fn tones(&self) -> Vec<ToneInfo> {
         (0u16..=1023)
             .filter_map(|id| {
-                let name = self.backup.tone_name(id)?;
-                if name.is_empty() {
+                let m = self.backup.tone_meta(id)?;
+                if m.name.is_empty() {
                     return None;
                 }
                 Some(ToneInfo {
                     id,
-                    name,
+                    name: m.name,
+                    category: m.category,
+                    tone_type: m.tone_type,
                     is_user: id >= USER_TONE_ID_MIN,
                 })
             })
             .collect()
+    }
+
+    /// Define a user tone slot: write `id`'s name, category, type, and loop flag
+    /// (a [`tr_format::ToneMeta`]). Returns `false` if the id is out of range.
+    /// Use this to name the slots a sliced break is imported to.
+    pub fn set_tone_meta(&mut self, id: u16, meta: &tr_format::ToneMeta) -> bool {
+        self.backup.set_tone_meta(id, meta)
     }
 
     /// Every populated user-sample slice (`PCMT` record), in table order.

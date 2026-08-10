@@ -117,6 +117,16 @@ the KIT section:
 - `TONE` chunk `@0x326F90`. Payload begins with a 16-byte preamble, then
   **`0x24` (36-byte) entries**: `name[16]` + `params[20]`. Tone-ID 0 is the
   first entry after the preamble.
+- **Entry `params` layout — SOLVED (from `Script.xml`'s `toneCmn` struct).**
+  Within an entry: `name[16]`, then `Category` @`0x10` (`0..=52`), `Type` @`0x11`
+  (`0..=3`), `LOOP` @`0x12` (`0..=1`), a reserved byte, then 4×`int8x4` reserved.
+  `Category`/`Type` sit at the **same offsets** as the device tone-meta region
+  (`0x30`; `docs/device-sysex.md`) — cross-validated. Confirmed on the real
+  backup: **all 422 named tones** fall inside the declared ranges, and values are
+  sensible (`808 Bass*`→category 1, `808 Snare*`→category 2). `tr-format` exposes
+  `Backup::tone_meta` / `set_tone_meta` (name + category + type + loop),
+  length-preserving — enough to **define a user tone slot** (what the slicer
+  needs to name imported slices).
 - Each kit record holds **6 voice tone-IDs** (`u16` LE) at
   `record + 0x194 + voice*0x34` (stride `0x34`), voices in order
   **BD, SD, LT, HC, CH, OH**.

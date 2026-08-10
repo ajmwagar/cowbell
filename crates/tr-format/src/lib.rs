@@ -398,6 +398,33 @@ pub const TONE_NAME_LEN: usize = 16;
 /// `USER_TONE_ID_MIN` (`docs/device-sysex.md`).
 pub const USER_TONE_ID_MIN: u16 = 624;
 
+// TONE-entry field offsets within a `0x24` entry, from `Script.xml`'s `toneCmn`
+// struct (`name[16]` then the fields below) and cross-validated against the
+// device tone-meta region (`0x30`): `Category`/`Type` sit at the same offsets on
+// the wire (`docs/device-sysex.md`).
+/// `tone.category` byte offset within a TONE entry (range `0..=52`).
+pub const TONE_CATEGORY_OFFSET: usize = 0x10;
+/// `tone.type` byte offset within a TONE entry (range `0..=3`).
+pub const TONE_TYPE_OFFSET: usize = 0x11;
+/// `tone.loop` byte offset within a TONE entry (range `0..=1`).
+pub const TONE_LOOP_OFFSET: usize = 0x12;
+
+/// The decoded metadata of a `TONE` table entry — enough to define a user tone
+/// slot. The remaining reserved bytes of the `0x24` entry are preserved on
+/// write. Field offsets are `Script.xml`-attested and device-cross-validated
+/// (see the `TONE_*_OFFSET` constants).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToneMeta {
+    /// Tone name (≤ 16 bytes).
+    pub name: String,
+    /// Category (`0..=52`).
+    pub category: u8,
+    /// Type (`0..=3`).
+    pub tone_type: u8,
+    /// Loop flag (`0`/`1`).
+    pub loop_on: u8,
+}
+
 /// A kit record located within the `KIT ` section. A lightweight view — call
 /// [`Kit::name`] / [`Kit::bytes`] with the owning [`Backup`]'s `raw()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -503,6 +530,51 @@ impl Backup {
                 .trim_end_matches([' ', '\0'])
                 .to_string(),
         )
+    }
+
+    /// File offset of TONE entry `id`, bounds-checked to the whole `0x24`-byte
+    /// entry lying within the `TONE` payload.
+    fn tone_entry_offset(&self, id: u16) -> Option<usize> {
+        let sec = self.find("TONE")?;
+        let o = sec.payload_offset + TONE_ENTRY_BASE_IN_PAYLOAD + id as usize * TONE_ENTRY_SIZE;
+        (o + TONE_ENTRY_SIZE <= sec.payload_offset + sec.payload_len).then_some(o)
+    }
+
+    /// The metadata of TONE entry `id` (name + category/type/loop), or `None` if
+    /// there is no `TONE` section / the id is out of range.
+    pub fn tone_meta(&self, id: u16) -> Option<ToneMeta> {
+        let o = self.tone_entry_offset(id)?;
+        Some(ToneMeta {
+            name: String::from_utf8_lossy(&self.raw[o..o + TONE_NAME_LEN])
+                .trim_end_matches([' ', '\0'])
+                .to_string(),
+            category: self.raw[o + TONE_CATEGORY_OFFSET],
+            tone_type: self.raw[o + TONE_TYPE_OFFSET],
+            loop_on: self.raw[o + TONE_LOOP_OFFSET],
+        })
+    }
+
+    /// Rename TONE entry `id` (space-padded to 16 bytes). Returns `false` if the
+    /// entry is out of range. Length-preserving.
+    pub fn set_tone_name(&mut self, id: u16, name: &str) -> bool {
+        let Some(o) = self.tone_entry_offset(id) else {
+            return false;
+        };
+        write_name_field(&mut self.raw, o, TONE_NAME_LEN, name)
+    }
+
+    /// Write TONE entry `id`'s name, category, type, and loop flag in one call —
+    /// enough to define a user tone slot. Returns `false` if the entry is out of
+    /// range. Length-preserving; reserved bytes are left untouched.
+    pub fn set_tone_meta(&mut self, id: u16, meta: &ToneMeta) -> bool {
+        let Some(o) = self.tone_entry_offset(id) else {
+            return false;
+        };
+        write_name_field(&mut self.raw, o, TONE_NAME_LEN, &meta.name);
+        self.raw[o + TONE_CATEGORY_OFFSET] = meta.category;
+        self.raw[o + TONE_TYPE_OFFSET] = meta.tone_type;
+        self.raw[o + TONE_LOOP_OFFSET] = meta.loop_on;
+        true
     }
 
     /// The kit records in the `KIT ` section (128 on a full TR-6S backup), or an
@@ -1264,6 +1336,44 @@ mod tests {
                 Some(names[id as usize].as_str())
             );
         }
+    }
+
+    #[test]
+    fn tone_meta_reads_and_writes_round_trip() {
+        let (bytes, ids, names) = synthetic_with_kit_and_tones();
+        let mut b = Backup::parse(bytes).unwrap();
+        let id = ids[1];
+
+        // Read the seeded name; category/type/loop default to 0.
+        let m = b.tone_meta(id).unwrap();
+        assert_eq!(m.name, names[id as usize]);
+        assert_eq!((m.category, m.tone_type, m.loop_on), (0, 0, 0));
+
+        // Define a user tone slot in one call.
+        let want = ToneMeta {
+            name: "Amen Slice 0".into(),
+            category: 7,
+            tone_type: 2,
+            loop_on: 1,
+        };
+        assert!(b.set_tone_meta(id, &want));
+        assert_eq!(b.tone_meta(id).unwrap(), want);
+        // The name reader agrees, and the raw bytes sit at the attested offsets.
+        assert_eq!(b.tone_name(id).as_deref(), Some("Amen Slice 0"));
+        let o = b.tone_entry_offset(id).unwrap();
+        assert_eq!(b.raw()[o + TONE_CATEGORY_OFFSET], 7);
+        assert_eq!(b.raw()[o + TONE_TYPE_OFFSET], 2);
+        assert_eq!(b.raw()[o + TONE_LOOP_OFFSET], 1);
+
+        // A neighbouring entry is untouched (length-preserving, local).
+        assert_eq!(
+            b.tone_name(ids[0]).as_deref(),
+            Some(names[ids[0] as usize].as_str())
+        );
+
+        // Out-of-range id is rejected, not a panic.
+        assert!(!b.set_tone_name(9999, "x"));
+        assert!(b.tone_meta(9999).is_none());
     }
 
     #[test]
