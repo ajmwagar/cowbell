@@ -12,6 +12,10 @@ rust-version.workspace = true
 name = "tr_sysex"
 path = "src/lib.rs"
 
+[[bin]]
+name = "tr-sysex"
+path = "src/main.rs"
+
 [features]
 # `usb` pulls in a `midir` adapter implementing `MidiPort` against real
 # hardware. It is OFF by default: the default build and `cargo test` need no
@@ -22,6 +26,7 @@ usb = ["dep:midir"]
 
 [dependencies]
 anyhow.workspace = true
+clap.workspace = true
 
 # Optional real-hardware transport. Only compiled with `--features usb`.
 midir = { version = "0.11", optional = true }

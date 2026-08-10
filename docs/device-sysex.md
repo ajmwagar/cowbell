@@ -55,6 +55,17 @@ replies with a **DT1** carrying the bytes at that address. That is a full,
 no-hardware read of device memory over USB — the thing `cowbell-uqk` was chasing.
 Data payloads >7 bits are 7-bit-packed (the JS `encode/decode7bitBytes`).
 
+**Checksum — external anchor.** The `(0x80 − (sum & 0x7F)) & 0x7F` form is pinned
+to Roland's *own* published worked example (SC-88 MIDI implementation): the run
+`40 00 7F 00` has checksum `41`. `tr-sysex` asserts this in a unit test, so the
+routine matches Roland's spec, not just our internal invariant.
+
+**7-bit ties to `tr-format`.** Because every wire byte is `0x00..=0x7F`, a
+parameter spans the wire in `⌈bits(range_max) / 7⌉` bytes — the *same*
+`int4x4`-sizing rule `tr-format` derives from `Script.xml` (a 0–1023 field is 2
+bytes, a 16-bit mask 3). A field read via RQ1 unpacks with the exact width
+`tr-format` uses to locate it in a backup.
+
 ## The device address map
 
 Roland's parameter-address model for the edit buffer (`temp`), recovered from the
@@ -85,6 +96,23 @@ Address regions: `0x01` step/system, `0x10` kit, `0x20` pattern, `0x30` tone
 metadata, `0x40` tone PCM (sample refs), `0x50` utility. Persistent slots are the
 same fields at slot-offset base addresses (the JS walks them via an `offsets`
 table + `offsetAddress`).
+
+### These are NOT the editor/backup addresses (a discrepancy to respect)
+
+`Script.xml` and the backup-file format address the same sections **differently**:
+`kit = 03 00 00 00`, `ptn = 04 00 00 00` (see `docs/tr-format.md`). The device
+SysEx capture above puts kit at `0x10`, pattern at `0x20`, tone at `0x30` —
+*different region bytes*. So the editor/backup model and the device's RQ1/DT1
+address space are **two coordinate systems, not one.**
+
+This matters because a parallel effort derived the device addresses from
+`Script.xml` and assumed they were the same (`kit = 03 00 00 00` sent in an RQ1).
+The **ARIA capture is real wire traffic to a device**, so it is the authority:
+send the `0x10`/`0x20`/`0x30` addresses, not the Script.xml ones. `tr-sysex`
+exposes the Script.xml bases under `address::editor_model` **only** for
+cross-reference, explicitly marked as *not* the device addresses. Whether the
+device also answers on the editor coordinates is an open question for a capture —
+current evidence says it does not.
 
 ### Device constants (from the same config)
 
@@ -132,6 +160,23 @@ model itself.
 - It does **not** touch firmware decryption: this is the plaintext user-data
   plane, same as the backup. The `App1_Main` key is still a NOR-dump problem
   (`cowbell-8o5`).
+
+## The `tr-sysex` crate + CLI
+
+The [`tr-sysex`](../crates/tr-sysex) crate implements this protocol clean-room
+(build/parse RQ1/DT1, the checksum, 7-bit packing, the address map, a `MidiPort`
+trait for the read/write round-trip). It also ships a byte-only CLI — no MIDI
+I/O, it just prints messages to inspect or diff:
+
+```sh
+tr-sysex checksum "40 00 7F 00"        # -> 0x41 (Roland's SC-88 worked example)
+tr-sysex rq1 kit --size 0x520          # RQ1: read one kit record (device kit region 0x10)
+tr-sysex parse "F0 41 10 00 11 10 00 00 00 00 00 0A 20 46 F7"   # describe + verify checksum
+tr-sysex dt1 pattern --data "01 02 03 7F"   # DT1 write (prints bytes only; sends nothing)
+```
+
+The region names (`kit`/`pattern`/`tone`/`sys`) resolve to the **device** SysEx
+bases, not the editor-model ones.
 
 Next: capture our own RQ1/DT1 exchange against a device to confirm the `modelId`
 bytes and checksum end-to-end, and map the persistent-slot base addresses. A

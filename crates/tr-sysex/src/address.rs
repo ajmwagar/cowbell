@@ -272,3 +272,31 @@ pub const SAMPLE_ADDRESS_MAX: u32 = 0x3FF_FFFF;
 /// User-sample storage size, `0x3300000` (≈51 MB). Cross-validates with the
 /// backup `SMPL` chunk's reserved region.
 pub const STORAGE_SIZE: u32 = 0x330_0000;
+
+// ---------------------------------------------------------------------------
+// Editor-model (Script.xml / backup-file) section bases — a DIFFERENT address
+// space from the device-SysEx addresses above. Provided for cross-reference.
+// ---------------------------------------------------------------------------
+
+/// **Editor-model** section base addresses, as TR Editor's `Script.xml` and the
+/// backup-file format use them (`tr-format`'s `Script.xml` oracle;
+/// `docs/tr-format.md`): `kit = 03 00 00 00`, `ptn = 04 00 00 00`.
+///
+/// **These are NOT the device's RQ1/DT1 addresses.** They are the editor's
+/// internal / backup-file coordinate system. The actual device SysEx capture
+/// (`docs/device-sysex.md`) puts the same sections at *different* region bytes —
+/// kit at `0x10`, pattern at `0x20`, tone at `0x30` (see [`KIT_NAME`],
+/// [`PATTERN_NAME`], [`TONE_NAME`]). Because only the capture is attested wire
+/// traffic, the device-SysEx constants above are what you send; these
+/// editor-model bases are exposed **only** to make that discrepancy explicit and
+/// to cross-reference the backup format. Do not send them in an RQ1 expecting a
+/// device reply until a capture confirms the device honours this coordinate
+/// system (it appears not to).
+pub mod editor_model {
+    use super::RolandAddress;
+
+    /// `Script.xml` kit section base (`03 00 00 00`) — editor/backup model.
+    pub const KIT: RolandAddress = RolandAddress::new([0x03, 0x00, 0x00, 0x00]);
+    /// `Script.xml` pattern section base (`04 00 00 00`) — editor/backup model.
+    pub const PATTERN: RolandAddress = RolandAddress::new([0x04, 0x00, 0x00, 0x00]);
+}

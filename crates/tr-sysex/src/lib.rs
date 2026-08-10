@@ -421,6 +421,15 @@ mod tests {
     }
 
     #[test]
+    fn checksum_matches_rolands_published_worked_example() {
+        // Roland's own documented example (SC-88 MIDI implementation): the run
+        // `40 00 7F 00` (address 40 00 7F, data 00) has checksum `41`. An
+        // external anchor that pins `roland_checksum` to Roland's spec, not just
+        // to our own invariant above.
+        assert_eq!(roland_checksum(&[0x40, 0x00, 0x7F, 0x00]), 0x41);
+    }
+
+    #[test]
     fn seven_bit_encode_decode_is_inverse() {
         for data in [
             vec![],
