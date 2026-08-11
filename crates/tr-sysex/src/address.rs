@@ -18,8 +18,16 @@
 //! **not** 7-bit-safe. In base-128 it carries into the next digit
 //! (`00 01 00 00`), which is. So [`RolandAddress::offset`] does base-128 add.
 //!
-//! The base-128 model is now **confirmed by a real RQ1/DT1 capture** (the
-//! compuphonic "send pattern/kit" transfer): kit 126 ("kit 127" 1-indexed) is
+//! The base-128 model is now confirmed **two independent ways** — a real RQ1/DT1
+//! capture *and* TR Editor's own sender code. The binary's
+//! `CKoaAddress::GetNibbledAddress` emits an address as
+//! `(v>>21, v>>14, v>>7, v) & 0x7f` (identical to [`RolandAddress::from_value`]),
+//! and `SendRolandDt1Message`/`SendRolandRq1Message` build the 4-byte address by
+//! **summing each schema struct's `<address>` down the tree** (`addr += parent
+//! .address`) — exactly the offset model used here (base + [`ArrayField`] stride +
+//! sub-struct offset). Slot index lands in address byte 1 (`index × 0x4000`), and
+//! the edit buffer is store-command index `0x3FFF`. From the capture:
+//! kit 126 ("kit 127" 1-indexed) is
 //! written at `10 7e 00 00` — i.e. the 0-indexed kit number lands directly in
 //! address byte 1, and its 11 instrument records step byte 2 by 1 each
 //! (`10 7e 10 00 … 10 7e 1a 00`). That capture also **corrected** the per-record
@@ -218,6 +226,59 @@ pub fn kit_instruments(i: u32) -> Option<ArrayField> {
     })
 }
 
+/// The sub-structs *within* a kit, as base-128 value offsets from the kit's
+/// base address. **SCHEMA + BINARY confirmed** (`Script.xml` `usrKit` children;
+/// TR Editor sums the schema `<address>` bases down the tree, see the module
+/// docs). These are the **same records `tr-format` decodes in the backup**, just
+/// re-based to the device's `0x10` region — so a kit's reverb/delay/MFX/ext-in
+/// and per-voice params are all reachable over SysEx at `kit_sub(i, OFFSET)`.
+///
+/// | offset | struct | `tr-format` analogue |
+/// | ------ | ------ | -------------------- |
+/// | `0x0000` | `kitCmn` | kit common/name |
+/// | `0x0080` | `kitRev` | `ReverbParams` |
+/// | `0x0100` | `kitDly` | `DelayParams` |
+/// | `0x0180` | `kitMfxCommon` | `MfxParams` |
+/// | `0x01A6` | `kitMfxShare` | MFX per-slot |
+/// | `0x0200` | `kitExtIn` | `ExtInFx` |
+/// | `0x0280` | `kitLfo` | kit LFO |
+/// | `0x0300` | `kitCtrl` | kit control |
+/// | `0x0380` | `kitOut` | kit output |
+/// | `0x0400` | `kitRef` | kit reference |
+/// | `0x0800` | `instCommon[0]` | `VoiceParams` (step `0x80`, ×11) |
+pub mod kit_sub {
+    /// `kitCmn` — kit common (name, etc.).
+    pub const CMN: u32 = 0x0000;
+    /// `kitRev` — reverb (`tr_format::fx::ReverbParams`).
+    pub const REVERB: u32 = 0x0080;
+    /// `kitDly` — delay (`tr_format::fx::DelayParams`).
+    pub const DELAY: u32 = 0x0100;
+    /// `kitMfxCommon` — master FX common (`tr_format::fx::MfxParams`).
+    pub const MFX_COMMON: u32 = 0x0180;
+    /// `kitMfxShare` — master FX per-slot.
+    pub const MFX_SHARE: u32 = 0x01A6;
+    /// `kitExtIn` — external-input FX (`tr_format::fx::ExtInFx`).
+    pub const EXT_IN: u32 = 0x0200;
+    /// `kitLfo` — kit LFO.
+    pub const LFO: u32 = 0x0280;
+    /// `kitCtrl` — kit control.
+    pub const CTRL: u32 = 0x0300;
+    /// `kitOut` — kit output routing.
+    pub const OUT: u32 = 0x0380;
+    /// `kitRef` — kit reference.
+    pub const REF: u32 = 0x0400;
+    /// `instCommon[0]` — first per-voice params record (step `0x80`, 11 voices).
+    pub const INST_COMMON: u32 = 0x0800;
+    /// `instFxCommon[0]` — first per-inst insert-FX record (step `0x80`).
+    pub const INST_FX_COMMON: u32 = 0x1000;
+}
+
+/// Address of sub-struct `offset` (from [`kit_sub`]) within kit `i`
+/// (`0..KIT_COUNT`). Returns `None` if `i` is out of range.
+pub fn kit_sub(i: u32, offset: u32) -> Option<RolandAddress> {
+    (i < KIT_COUNT).then(|| KIT_NAME.offset(KIT_BLOCK.wrapping_mul(i).wrapping_add(offset)))
+}
+
 // ---------------------------------------------------------------------------
 // Pattern (`ptn.*`) — region 0x20, per-pattern block stride 0x40000 (CAPTURE-CONFIRMED)
 // ---------------------------------------------------------------------------
@@ -249,6 +310,47 @@ pub fn pattern_name(i: u32) -> Option<RolandAddress> {
 pub fn pattern_kit_reference(i: u32) -> Option<RolandAddress> {
     (i < PATTERN_COUNT).then(|| PATTERN_KIT_REFERENCE.offset(PATTERN_BLOCK.wrapping_mul(i)))
 }
+
+/// Number of variations per pattern (A–H + 2 fills). **SCHEMA-confirmed**
+/// (`ptnVar[0..9]`).
+pub const PATTERN_VARIATIONS: u32 = 10;
+/// Base-128 offset of a pattern's `ptnCmn` (common: name/tempo/kit ref).
+pub const PTN_CMN_OFFSET: u32 = 0x0000;
+/// Base-128 stride between consecutive `ptnVar` variations. **SCHEMA-confirmed**:
+/// `ptnVar[v]` sits at `+(v+1)·0x4000` (address byte 1 `+1` per variation), i.e.
+/// variations occupy byte-1 `0x01..=0x0A` within the pattern's `0x10`-wide slot.
+pub const PATTERN_VARIATION_STRIDE: u32 = 0x4000;
+
+/// Base address of pattern `i`'s variation `v` (`v < PATTERN_VARIATIONS`) — the
+/// root of its 27-slot step/motion array (same `ptnVar00..26` layout as the
+/// backup). `None` if out of range. The individual step/motion slots are
+/// addressed by adding their in-`ptnVar` offset (see `docs/device-sysex.md`).
+pub fn pattern_variation(i: u32, v: u32) -> Option<RolandAddress> {
+    (i < PATTERN_COUNT && v < PATTERN_VARIATIONS).then(|| {
+        let off = PATTERN_BLOCK
+            .wrapping_mul(i)
+            .wrapping_add(PATTERN_VARIATION_STRIDE.wrapping_mul(v + 1));
+        PATTERN_NAME.offset(off)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Utility / store commands — region 0x50 (BINARY-confirmed sender addresses)
+// ---------------------------------------------------------------------------
+
+/// Store-command index that targets the **edit buffer** (temp) rather than a
+/// persistent slot. The store commands accept a 2-byte base-128 slot index of
+/// `0..=127`, or this `0x3FFF` (14-bit all-ones → wire `7F 7F`) for temp.
+pub const TEMP_SLOT_INDEX: u16 = 0x3FFF;
+
+/// "Write Pattern" store command (`50 00 00 01`): copies the edit-buffer pattern
+/// to the slot named in its 2-byte payload (see [`TEMP_SLOT_INDEX`]).
+pub const CMD_WRITE_PATTERN: RolandAddress = RolandAddress::new([0x50, 0x00, 0x00, 0x01]);
+/// "Write Kit" store command (`50 00 00 02`).
+pub const CMD_WRITE_KIT: RolandAddress = RolandAddress::new([0x50, 0x00, 0x00, 0x02]);
+/// "Display Message" command (`50 00 00 12`): payload is up to 32 ASCII bytes,
+/// space-padded, shown on the device screen.
+pub const CMD_DISPLAY_MESSAGE: RolandAddress = RolandAddress::new([0x50, 0x00, 0x00, 0x12]);
 
 // ---------------------------------------------------------------------------
 // Tone metadata (`tone.*`) — region 0x30, per-tone block stride 0x10000

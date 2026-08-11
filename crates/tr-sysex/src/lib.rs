@@ -647,6 +647,56 @@ mod tests {
     }
 
     #[test]
+    fn kit_substructs_and_pattern_variations_match_the_schema() {
+        use address::kit_sub;
+        // Kit 126 sub-structs: reverb at 10 7e 01 00, delay at 10 7e 02 00,
+        // ext-in at 10 7e 04 00 (Script.xml usrKit child offsets).
+        assert_eq!(
+            address::kit_sub(126, kit_sub::REVERB).unwrap().bytes(),
+            [0x10, 0x7e, 0x01, 0x00]
+        );
+        assert_eq!(
+            address::kit_sub(126, kit_sub::DELAY).unwrap().bytes(),
+            [0x10, 0x7e, 0x02, 0x00]
+        );
+        assert_eq!(
+            address::kit_sub(126, kit_sub::EXT_IN).unwrap().bytes(),
+            [0x10, 0x7e, 0x04, 0x00]
+        );
+        // instCommon[0] == the first kit instrument record (10 xx 10 00).
+        assert_eq!(
+            address::kit_sub(126, kit_sub::INST_COMMON).unwrap().bytes(),
+            address::kit_instruments(126)
+                .unwrap()
+                .nth(0)
+                .unwrap()
+                .bytes()
+        );
+        assert!(address::kit_sub(128, kit_sub::REVERB).is_none());
+
+        // Pattern variations: ptnVar[v] at +(v+1) in address byte 1.
+        assert_eq!(
+            address::pattern_variation(0, 0).unwrap().bytes(),
+            [0x20, 0x01, 0x00, 0x00]
+        );
+        assert_eq!(
+            address::pattern_variation(0, 9).unwrap().bytes(),
+            [0x20, 0x0a, 0x00, 0x00]
+        );
+        // Pattern 1 (byte1 base 0x10) + variation 0 -> byte1 0x11.
+        assert_eq!(
+            address::pattern_variation(1, 0).unwrap().bytes(),
+            [0x20, 0x11, 0x00, 0x00]
+        );
+        assert!(address::pattern_variation(0, 10).is_none());
+
+        // Utility store commands (region 0x50) + temp index.
+        assert_eq!(address::CMD_WRITE_KIT.bytes(), [0x50, 0x00, 0x00, 0x02]);
+        assert_eq!(address::CMD_WRITE_PATTERN.bytes(), [0x50, 0x00, 0x00, 0x01]);
+        assert_eq!(address::TEMP_SLOT_INDEX, 0x3FFF);
+    }
+
+    #[test]
     fn address_value_round_trips_base128() {
         let a = RolandAddress::new([0x20, 0x40, 0x7F, 0x03]);
         assert_eq!(RolandAddress::from_value(a.to_value()), a);
