@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/fw-analyze",
     "crates/fw-extract",
+    "crates/tr-ffi",
     "crates/tr-format",
     "crates/tr-studio",
     "crates/tr-sysex",

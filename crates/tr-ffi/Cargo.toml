@@ -1,0 +1,32 @@
+[package]
+name = "tr-ffi"
+description = "UniFFI bindings over tr-format/tr-studio/tr-sysex — the Rust core of the Groovebank macOS/iPadOS app. File plane and device plane; plaintext user data only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tr_ffi"
+path = "src/lib.rs"
+# `staticlib` is what the Xcode app links; `cdylib` is what uniffi-bindgen reads
+# metadata out of; `lib` keeps the crate usable from Rust tests.
+crate-type = ["staticlib", "cdylib", "lib"]
+
+# The bindings generator, built from this crate so its uniffi version can never
+# drift from the one that generated the scaffolding.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+# `tr-sysex` speaks `anyhow::Result` at its port boundary, so the adapter in
+# `device.rs` has to name that type.
+anyhow.workspace = true
+tr-format = { path = "../tr-format" }
+tr-studio = { path = "../tr-studio" }
+tr-sysex = { path = "../tr-sysex" }
+uniffi = { version = "0.32", features = ["cli"] }
+thiserror = "2"

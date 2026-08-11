@@ -106,7 +106,8 @@ fn kit(path: &std::path::Path, number: usize) -> Result<()> {
         "  {:<3} {:>4} {:<18} {:>4} {:>5} {:>4} {:>4} {:>4} {:>4}",
         "V", "tone", "name", "tune", "decay", "lvl", "gain", "pan", "rev/dly"
     );
-    for (voice, vp) in tr_format::VOICES.iter().zip(k.voices(raw)) {
+    let names = b.voice_names();
+    for (voice, vp) in names.iter().zip(k.voices_n(raw, names.len())) {
         let tone = b.tone_name(vp.tone).unwrap_or_default();
         println!(
             "  {:<3} {:>4} {:<18} {:>4} {:>5} {:>4} {:>4} {:>4} {:>2}/{:<2}",
