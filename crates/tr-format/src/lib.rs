@@ -44,6 +44,30 @@ use anyhow::{bail, Context, Result};
 pub const MAGIC_TR6S: &[u8; 4] = b"TR6S";
 pub const MAGIC_TR8S: &[u8; 4] = b"TR8S";
 
+/// The magic of a Roland Cloud **`.t8p` pack** — TR-8S patterns and kits
+/// distributed as content rather than as a whole-device backup.
+///
+/// It is the *same container*: identical 64-byte header, the header CRC at
+/// [`HEADER_CRC_OFFSET`], 16-byte chunk headers, and the same `NAME`/`PTN `/
+/// `KIT ` tags. Only the magic and the version differ — `3` for a pattern pack,
+/// `6` for a project pack (which also carries sample data and so runs to tens of
+/// megabytes). Confirmed against the Roland Cloud packs, whose sidecar `.txt`
+/// manifests list every pattern's tempo and kit reference and every kit's
+/// eleven voices, all of which this parser reproduces.
+///
+/// A `.t8p` holds **TR-8S** data, so anything choosing a voice layout from the
+/// magic must treat it as an eleven-track TR-8S — see [`is_tr8s_layout`].
+pub const MAGIC_T8P: &[u8; 4] = b"T8P ";
+
+/// Whether a container's magic means the **TR-8S** eleven-track voice layout
+/// ([`INST_TRACKS`]) rather than the TR-6S's six ([`VOICES`]).
+///
+/// Exists so the `.t8p` case cannot be forgotten at a call site: a plain
+/// `magic == MAGIC_TR8S` check silently mislabels a pack's voices as a TR-6S's.
+pub fn is_tr8s_layout(magic: &[u8; 4]) -> bool {
+    magic == MAGIC_TR8S || magic == MAGIC_T8P
+}
+
 /// Bytes before the first chunk (the fixed file header).
 pub const HEADER_LEN: usize = 0x40;
 /// Offset of the file-header **CRC-32** (`u32` LE) within the header. It covers
@@ -135,18 +159,19 @@ pub struct Backup {
 }
 
 impl Backup {
-    /// Parse a backup image. Verifies the `TR6S`/`TR8S` magic and builds a
-    /// directory of the container chunks. The bytes are retained verbatim.
+    /// Parse a container image: a `TR6S`/`TR8S` device backup, or a `T8P `
+    /// Roland Cloud pack ([`MAGIC_T8P`]), which shares the same layout. Builds a
+    /// directory of the chunks; the bytes are retained verbatim.
     pub fn parse(bytes: impl Into<Vec<u8>>) -> Result<Backup> {
         let raw = bytes.into();
         if raw.len() < HEADER_LEN {
-            bail!("too small to be a TR backup ({} bytes)", raw.len());
+            bail!("too small to be a TR container ({} bytes)", raw.len());
         }
         let mut magic = [0u8; 4];
         magic.copy_from_slice(&raw[0..4]);
-        if &magic != MAGIC_TR6S && &magic != MAGIC_TR8S {
+        if &magic != MAGIC_TR6S && &magic != MAGIC_TR8S && &magic != MAGIC_T8P {
             bail!(
-                "bad magic {:?}: not a TR6S/TR8S backup",
+                "bad magic {:?}: not a TR6S/TR8S backup or a T8P pack",
                 String::from_utf8_lossy(&magic)
             );
         }
@@ -260,7 +285,52 @@ pub const KIT_NAME_OFFSET: usize = 0x10;
 pub const KIT_NAME_LEN: usize = 16;
 
 /// The six TR-6S voice slots, in record order.
+///
+/// **This is the TR-6S layout only.** A TR-8S kit record holds eleven voices in
+/// the same blocks ([`INST_TRACKS`]), so reading a TR-8S or `.t8p` kit through
+/// this list does not just truncate — it *mislabels*: slots 3–5 are MT/HT/RS on
+/// a TR-8S, and calling them HC/CH/OH is wrong. Pick the list with
+/// [`Backup::voice_names`] rather than reaching for this constant directly.
 pub const VOICES: [&str; 6] = ["BD", "SD", "LT", "HC", "CH", "OH"];
+
+/// The twelve slider/pad LED colours, by stored index.
+///
+/// These are the colours the hardware lights its faders and pads with, one per
+/// instrument, and the panel offers exactly this list. Index order is Roland's.
+pub const SLIDER_COLORS: [&str; 12] = [
+    "Red",
+    "Orange",
+    "Yellow",
+    "Lime",
+    "Green",
+    "SkyBlue",
+    "LightBlue",
+    "Blue",
+    "Purple",
+    "Magenta",
+    "Pink",
+    "White",
+];
+
+/// Offset of the eleven `SLIDER COLOR` bytes **from the start of a kit record**.
+///
+/// One byte per instrument in [`INST_TRACKS`] panel order, each an index into
+/// [`SLIDER_COLORS`]. Confirmed on the reference TR-6S backup: all 128 kits hold
+/// values inside `0..=11` with no exceptions, and the common scheme reads
+/// `0, 1, 3` = Red/Orange/Lime for BD/SD/LT, matching the schema defaults.
+/// See `docs/tr-format.md`.
+///
+/// **Record-relative, not `kitCmn`-relative.** `docs/tr-format.md` gives this as
+/// `+0x3A..+0x44` in a passage that also discusses `kitCmn` at record `+0x10`,
+/// which reads as though the two should be added. They must not be: the bytes
+/// are at `+0x3A` from the record, and adding `kitCmn`'s own offset lands 16
+/// bytes late in the middle of `INST GROUP` masks, where every kit reads zero —
+/// plausible enough to look like "no colours set" rather than like a bug.
+pub const KIT_SLIDER_COLOR_OFFSET: usize = 0x3A;
+
+/// Number of slider-colour bytes stored per kit — one per TR-8S instrument. A
+/// TR-6S uses the first six (its own voice slots) and leaves the rest zero.
+pub const KIT_SLIDER_COLOR_COUNT: usize = 11;
 
 // --- Kit-record voice block ---------------------------------------------------
 // CONFIRMED against Roland TR Editor's schema (Contents/Resources/Script/
@@ -460,12 +530,70 @@ impl Kit {
         ids
     }
 
-    /// The six voices' full [`VoiceParams`] (BD, SD, LT, HC, CH, OH).
+    /// The first `count` voices' tone IDs. Use [`Backup::voice_names`]`.len()`
+    /// for `count` so a TR-8S or `.t8p` kit yields all eleven.
+    pub fn voice_tone_ids_n(&self, raw: &[u8], count: usize) -> Vec<u16> {
+        (0..count)
+            .filter_map(|i| {
+                let o = self.offset + VOICE_TONE_ID_OFFSET + i * VOICE_STRIDE;
+                (o + 2 <= raw.len()).then(|| u16::from_le_bytes([raw[o], raw[o + 1]]))
+            })
+            .collect()
+    }
+
+    /// The six voices' full [`VoiceParams`] — the **TR-6S** view. For a TR-8S
+    /// or a `.t8p` pack use [`Kit::voices_n`], which reads all eleven.
     pub fn voices(&self, raw: &[u8]) -> [VoiceParams; 6] {
         std::array::from_fn(|i| {
             let o = self.offset + VOICE_TONE_ID_OFFSET + i * VOICE_STRIDE;
             VoiceParams::from_block(&raw[o..o + VOICE_STRIDE])
         })
+    }
+
+    /// The first `count` voices' full [`VoiceParams`], stopping early rather
+    /// than panicking if the record is short.
+    pub fn voices_n(&self, raw: &[u8], count: usize) -> Vec<VoiceParams> {
+        (0..count)
+            .filter_map(|i| {
+                let o = self.offset + VOICE_TONE_ID_OFFSET + i * VOICE_STRIDE;
+                (o + VOICE_STRIDE <= raw.len())
+                    .then(|| VoiceParams::from_block(&raw[o..o + VOICE_STRIDE]))
+            })
+            .collect()
+    }
+
+    /// The LED colour index of voice `voice`, or `None` past the stored run.
+    ///
+    /// Index into [`SLIDER_COLORS`]; see [`KIT_SLIDER_COLOR_OFFSET`].
+    pub fn slider_color(&self, raw: &[u8], voice: usize) -> Option<u8> {
+        if voice >= KIT_SLIDER_COLOR_COUNT {
+            return None;
+        }
+        raw.get(self.offset + KIT_SLIDER_COLOR_OFFSET + voice)
+            .copied()
+    }
+
+    /// The first `count` voices' LED colour indices.
+    pub fn slider_colors(&self, raw: &[u8], count: usize) -> Vec<u8> {
+        (0..count.min(KIT_SLIDER_COLOR_COUNT))
+            .filter_map(|i| self.slider_color(raw, i))
+            .collect()
+    }
+
+    /// Set voice `voice`'s LED colour. Returns false if the voice or the colour
+    /// is out of range — the panel only offers the twelve in [`SLIDER_COLORS`],
+    /// and every one of the reference backup's 128 kits stays inside them, so a
+    /// wider value would be this writer inventing something the box never does.
+    pub fn set_slider_color(&self, raw: &mut [u8], voice: usize, color: u8) -> bool {
+        if voice >= KIT_SLIDER_COLOR_COUNT || color as usize >= SLIDER_COLORS.len() {
+            return false;
+        }
+        let o = self.offset + KIT_SLIDER_COLOR_OFFSET + voice;
+        if o >= raw.len() {
+            return false;
+        }
+        raw[o] = color;
+        true
     }
 
     /// Byte offset of voice `i`'s block within the file.
@@ -584,6 +712,19 @@ impl Backup {
     /// header (`+0x00`, includes an as-yet-unidentified checksum) and the
     /// per-voice params (6 voices: BD/SD/LT/HC/CH/OH, referencing a separate
     /// tone table) are not decoded yet — see `docs/tr-format.md`.
+    /// The voice slot names for this container's device: eleven for a TR-8S or
+    /// a `.t8p` pack ([`INST_TRACKS`]), six for a TR-6S ([`VOICES`]).
+    ///
+    /// Always source the voice count from here rather than hard-coding six —
+    /// see the warning on [`VOICES`].
+    pub fn voice_names(&self) -> &'static [&'static str] {
+        if is_tr8s_layout(&self.magic()) {
+            &INST_TRACKS
+        } else {
+            &VOICES
+        }
+    }
+
     pub fn kits(&self) -> Vec<Kit> {
         let Some(sec) = self.find("KIT") else {
             return Vec::new();
@@ -685,6 +826,9 @@ impl SubStep {
 pub const STEP_SUB_STEP_MASK: u8 = 0x07;
 /// Bit mask of the ALTERNATE flag within step-word byte 1.
 pub const STEP_ALTERNATE_MASK: u8 = 0x80;
+/// Bit mask of the per-step PROBABILITY field within step-word byte 3 (a 7-bit
+/// field, `int1x7`).
+pub const STEP_PROBABILITY_MASK: u8 = 0x7F;
 
 /// A pattern step word (`int8x4`, 4 bytes), decoded.
 ///
@@ -692,16 +836,20 @@ pub const STEP_ALTERNATE_MASK: u8 = 0x80;
 /// | ---- | ---- | ----- |
 /// | 0 | 0–7 | **velocity** (1–127; 0 = step off) |
 /// | 1 | 0–2 | **sub step** — 0 = none, else [`SubStep`] |
-/// | 1 | 3–6 | unknown (always 0 on the v1.51 reference backup) |
+/// | 1 | 3–6 | unknown (always 0 on the reference backups) |
 /// | 1 | 7 | **ALTERNATE** flag |
-/// | 2–3 | — | unknown (always 0 on the v1.51 reference backup) |
+/// | 2 | 0–7 | **motion value** (v2.00+ per-step parameter amount, 0–255) |
+/// | 3 | 0–6 | **probability** (`int1x7`, stored 0–10) |
+/// | 3 | 7 | unknown (always 0 on the reference backups) |
 ///
-/// TR Editor exposes exactly four per-step attributes — velocity, probability,
-/// sub step, alternate — so the unknown bits are where per-step **probability**
-/// (0–10) lives. It reads 0 for every step of every factory pattern in the
-/// reference backup, so its bit position is unconfirmed; per-step probability
-/// appears to be a later-firmware feature. The setters below preserve those
-/// bits, so editing a step can never destroy them.
+/// The step-word field layout is confirmed **device-free** from TR Editor's
+/// schema + binary (see `docs/tr-format.md`): the type name `int{A}x{B}` packs
+/// `A×B` bits, so `probability` (`int1x7`) is a **7-bit** field. That width
+/// cannot fit byte 1's 4-bit gap, which forces it into byte 3; reproducing the
+/// known fields (velocity/subStep/altFlg) fixes the rest. `probability` and the
+/// v2.00 `motionValue` read 0 on the reference backups (both are later-firmware
+/// features), but their positions are schema-attested, not merely inferred. The
+/// setters preserve every bit they do not own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StepWord {
@@ -749,13 +897,48 @@ impl StepWord {
         }
     }
 
-    /// The bits this crate does not understand yet (byte 1 bits 3–6, bytes 2–3).
-    /// Zero on every step of the reference backup; non-zero means a step carries
-    /// something we would drop if we re-encoded from the typed view alone.
+    /// Per-step PROBABILITY, as the stored value `0..=10` (byte 3, bits 0–6).
+    /// `0` means "unset" (`---`); `1..=10` map to a trigger chance — see
+    /// [`StepWord::probability_percent`].
+    pub fn probability(&self) -> u8 {
+        self.raw[3] & STEP_PROBABILITY_MASK
+    }
+
+    /// PROBABILITY as a trigger percentage: `None` when unset (`---`), else the
+    /// `0..=90%` chance the step fires. TR Editor maps stored `v` (1–10) to
+    /// `(100 − v·10)%` (its display list is `---,90,80,…,10,0`).
+    pub fn probability_percent(&self) -> Option<u8> {
+        match self.probability() {
+            0 => None,
+            v => Some(100u8.saturating_sub(v.min(10) * 10)),
+        }
+    }
+
+    /// Set PROBABILITY as the stored value (`0` clears it; values above `10` are
+    /// clamped). Preserves byte 3 bit 7 and every other byte.
+    pub fn set_probability(&mut self, probability: u8) {
+        let v = probability.min(10);
+        self.raw[3] = (self.raw[3] & !STEP_PROBABILITY_MASK) | v;
+    }
+
+    /// The per-step MOTION VALUE (byte 2, `0..=255`) — a v2.00+ per-step
+    /// parameter amount (`motionValue`). `0` on v1.51 backups (added later).
+    pub fn motion_value(&self) -> u8 {
+        self.raw[2]
+    }
+
+    /// Set the per-step MOTION VALUE (byte 2). Preserves every other byte.
+    pub fn set_motion_value(&mut self, value: u8) {
+        self.raw[2] = value;
+    }
+
+    /// The bits this crate still does not understand: byte 1 bits 3–6, and
+    /// byte 3 bit 7. (Velocity, sub step, alternate, probability, and the v2.00
+    /// motion value account for the rest.) Zero on the reference backups;
+    /// non-zero means a step carries something a typed re-encode would drop.
     pub fn unknown_bits(&self) -> u32 {
         u32::from(self.raw[1] & !(STEP_SUB_STEP_MASK | STEP_ALTERNATE_MASK))
-            | u32::from(self.raw[2]) << 8
-            | u32::from(self.raw[3]) << 16
+            | u32::from(self.raw[3] & !STEP_PROBABILITY_MASK) << 16
     }
 }
 
@@ -1495,6 +1678,46 @@ mod tests {
             .unknown_bits(),
             0
         );
+    }
+
+    #[test]
+    fn step_word_probability_and_motion_value() {
+        // probability lives in byte 3 (bits 0-6); motion value in byte 2.
+        let mut w = StepWord {
+            raw: [0x64, 0, 0, 0],
+        };
+        assert_eq!(w.probability(), 0);
+        assert_eq!(w.probability_percent(), None); // "---"
+
+        w.set_probability(1);
+        assert_eq!(w.probability(), 1);
+        assert_eq!(w.probability_percent(), Some(90));
+        assert_eq!(w.raw[3], 1);
+        w.set_probability(10);
+        assert_eq!(w.probability_percent(), Some(0));
+        w.set_probability(200); // clamps to 10
+        assert_eq!(w.probability(), 10);
+
+        // byte 3 bit 7 is preserved by set_probability.
+        w.raw[3] |= 0x80;
+        w.set_probability(4);
+        assert_eq!(w.probability(), 4);
+        assert_eq!(w.raw[3] & 0x80, 0x80);
+        assert_eq!(w.probability_percent(), Some(60));
+
+        // motion value = byte 2, full range.
+        w.set_motion_value(153);
+        assert_eq!(w.motion_value(), 153);
+        assert_eq!(w.raw[2], 153);
+
+        // With probability + motion value now decoded, only byte1 bits 3-6 and
+        // byte3 bit7 remain "unknown".
+        let w2 = StepWord {
+            raw: [0x50, 0x08, 99, 0x85],
+        };
+        assert_eq!(w2.probability(), 5);
+        assert_eq!(w2.motion_value(), 99);
+        assert_eq!(w2.unknown_bits(), 0x08 | (0x80u32 << 16));
     }
 
     #[test]

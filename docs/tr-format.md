@@ -567,7 +567,9 @@ Exposed as `track_role()` / `TrackRole` / `INST_TRACKS` in the crate.
 | `1` | 0–2 | **sub step** — `0` none, `1` FLAM, `2` `1/2`, `3` `1/3`, `4` `1/4` |
 | `1` | 3–6 | unknown (always 0 here) |
 | `1` | 7 | **ALTERNATE** flag |
-| `2`–`3` | — | unknown (always 0 here) |
+| `2` | 0–7 | **motion value** — v2.00+ per-step parameter amount, 0–255 (`motionValue`) |
+| `3` | 0–6 | **probability** — `int1x7`, stored 0–10 |
+| `3` | 7 | unknown (always 0 here) |
 
 Across all 512,000 step words in the backup, the six TR-6S voice tracks use
 exactly **eight** byte-1 values — `00 01 02 03 04 80 81 82` — and bytes 2–3 are
@@ -601,13 +603,21 @@ percussion-pair presets: `727_&_909` and `727_Variation_1/2` account for 572 of
 the 754 alternate steps, and in `727_&_909` the whole 16-step HC row is flagged —
 exactly the high/low conga-bongo alternation a 727 kit is for.
 
-**Probability is not in this data.** Per-step probability (`0`–`10`, displayed
-`---,90,…,0`) reads 0 for every step of every factory pattern, as does
-`ptnCmn.MASTER PROBABILITY`, so its bit position is **unconfirmed** — it is
-presumably one of the zero bits (byte 1 bits 3–6, or bytes 2–3) and looks like a
-later-firmware feature. `StepWord`'s setters preserve every undecoded bit, and
-`StepWord::unknown_bits()` reports them, so an edit can never silently drop
-per-step data this crate doesn't understand yet.
+**Probability = byte 3, resolved device-free.** Per-step probability (`0`–`10`,
+displayed `---,90,…,0`) reads 0 for every step of every factory pattern, as does
+`ptnCmn.MASTER PROBABILITY` — so the *data* alone can only say "some always-zero
+bits," and there were two candidates (byte 1 bits 3–6, or byte 3). TR Editor's
+schema + binary settle it without a device: the packer
+(`CKoaValue::ConvertFromElementDefs`) sizes a field of type `int{A}x{B}` at
+**A×B bits**, proven from its width tables — so `probability` (`int1x7`) is a
+**7-bit** field, which cannot fit byte 1's 4-bit gap. Reproducing the confirmed
+fields (velocity=byte 0, subStep=byte 1 bits 0–2, altFlg=byte 1 bit 7) with
+`motionValue` (`int2x4` = 8 bits) taking byte 2 forces probability into **byte 3,
+bits 0–6**. Its stored `v` (1–10) maps to `(100 − v·10)%`; `0` = `---` (unset).
+`StepWord` exposes `probability()` / `probability_percent()` / `set_probability()`
+and `motion_value()` / `set_motion_value()`; `unknown_bits()` now covers only
+byte 1 bits 3–6 and byte 3 bit 7. Both fields read 0 on the reference backups
+(later-firmware features), but their positions are schema-attested, not inferred.
 
 ### Motion (`PRM`) arrays — slots 12–24
 
