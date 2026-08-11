@@ -85,7 +85,7 @@ Observed on the reference backup:
 | `KIT ` | `0x2FDF70` | 167,936 B | Array: **128 records × 1,312 B** (`0x520`). Same `count,record_size` preamble. |
 | `TONE` | `0x326F90` | 36,864 B | Tone table: **1024 entries × 36 B** (`0x24`). |
 | `PCMT` | `0x32FFB0` | 65,536 B | PCM-tone table: **1024 records × 64 B** (`0x40`). |
-| `SMPL` | `0x33FFD0` | 0 B | User samples; empty here (none loaded). `extra` ≈ 0x3300000 = the reserved sample region — accounts for the ~51 MB of zero padding to EOF. |
+| `SMPL` | `0x33FFD0` | 0 B | User samples; empty here (none loaded). `extra` ≈ 0x3300000 = the reserved sample region — accounts for the ~51 MB to EOF, which is **`0xFF`-filled erased flash, not zeros**. |
 
 **There is no `FX  ` chunk** — earlier notes said one was "seen ×4"; that was a
 false positive, corrected below.
@@ -180,8 +180,10 @@ the remaining records (patterns, FX, SYS) — parse it, don't guess.
 
 User samples live in two chunks. **`SMPL`** is a *zero-length header* whose
 `extra` field declares the reserved PCM region size (`0x330_0000` ≈ 51 MB on the
-TR-6S); the raw audio blob follows it, which is why a sample-loaded backup is
-tens of MB. **`PCMT`** is a flat table of **1024 × 64-byte** records
+TR-6S); the raw audio blob follows it. The region is written out whether or not
+any samples are loaded — the sample-free reference backup is still 56.9 MB — so
+**file size does not indicate whether samples are present**, and the unused
+region reads as `0xFF`, not zeros. **`PCMT`** is a flat table of **1024 × 64-byte** records
 (`tonePcm`) — the backup analogue of the device's SysEx `tone.*` PCM region
 (`0x40`; see `docs/device-sysex.md`).
 

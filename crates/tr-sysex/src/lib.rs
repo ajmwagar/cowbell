@@ -24,11 +24,13 @@
 //! - `F0` / `F7` — SysEx start / end.
 //! - `41` — Roland manufacturer ID.
 //! - `deviceId` — the Utility "SysEx ID" (0-based unit number), one byte.
-//! - `modelId` — the model identifier, **4 bytes**. **CONFIRMED** for the TR-8S:
-//!   [`MODEL_ID_TR8S`] = `00 00 00 45`, from real RQ1/DT1 captures (every one of
-//!   1,956 messages across two capture files). Use [`DeviceConfig::tr8s`]. The
-//!   **TR-6S** id is not yet captured, so [`DeviceConfig::new`] still takes model
-//!   bytes for that case (no value invented).
+//! - `modelId` — the model identifier, **4 bytes**: [`MODEL_ID_TR`] =
+//!   `00 00 00 45`, **shared by the TR-6S and TR-8S**. Confirmed two ways — real
+//!   TR-8S RQ1/DT1 captures (every one of 1,956 messages across two capture
+//!   files), and TR Editor's `Script.xml`, whose single `TR CTRL`
+//!   `midiIn`/`midiOut` declares it for both boxes. Use [`DeviceConfig::tr8s`]
+//!   or [`DeviceConfig::tr6s`]; the two models are told apart by a separate
+//!   device-model field (`1` = TR-8S, `2` = TR-6S), not by the model ID.
 //! - `cmd` — [`CMD_RQ1`] (`0x11`, read/request) or [`CMD_DT1`] (`0x12`,
 //!   write/set). The DT1 the device sends to answer an RQ1 uses the same `0x12`.
 //! - `addr` — a 4-byte, 7-bit-safe device address (see [`address`]).
@@ -202,11 +204,11 @@ impl SysExMessage {
 
 /// A device endpoint: the SysEx ID (unit number) plus the model-id bytes.
 ///
-/// The model id is **not** hard-coded. `docs/device-sysex.md` does not pin the
-/// exact `modelId` bytes, so the caller supplies them (from a real capture);
-/// this crate refuses to present an invented value as fact. Once a capture
-/// confirms the TR-8S / TR-6S model id, add a named constant and a
-/// `DeviceConfig::tr8s(id)` / `tr6s(id)` convenience constructor.
+/// The model id is carried rather than hard-coded so the parse can split a
+/// variable-length prefix from the address. For a TR, prefer the named
+/// constructors [`DeviceConfig::tr8s`] / [`DeviceConfig::tr6s`], which use the
+/// confirmed [`MODEL_ID_TR`]; [`DeviceConfig::new`] remains for a device family
+/// whose id has not been captured.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceConfig {
     /// The Utility "SysEx ID" (0-based unit number), one byte.

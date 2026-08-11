@@ -10,9 +10,14 @@
 //!   `docs/device-sysex.md`).
 //! - **`SMPL`** — a **zero-length** chunk header whose `extra` field declares
 //!   the size of the reserved user-sample region (`0x330_0000`, ≈ 51 MB on the
-//!   TR-6S). The raw PCM audio blob follows the header for `extra` bytes; that
-//!   is why a sample-loaded backup is tens of MB while a sample-free one is a
-//!   few MB.
+//!   TR-6S). The raw PCM audio blob follows the header for `extra` bytes.
+//!
+//!   **The region is always written out, loaded or not.** The reference backup
+//!   has *no* user samples and is still 56.9 MB, because the reserved region is
+//!   present and filled with `0xFF` — erased flash, not zeros. Two consequences
+//!   that are easy to get wrong: file size says nothing about whether samples
+//!   are loaded, and a free-space scan looking for `0x00` will report the whole
+//!   51 MB as occupied.
 //!
 //! ## The slice model (why this matters for a breakbeat slicer)
 //!
