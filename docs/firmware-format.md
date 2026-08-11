@@ -172,6 +172,44 @@ until the key is recovered, and the key + decryption routine live in the
   key we could never brute-force is trivial to *read* off the chip that stores
   it. And the NOR may hold the already-decrypted firmware, making the key moot.
 
+### Software attack surface — EXHAUSTED (2026-08-10)
+
+A final "try everything on the files we have" pass. All negative, but they close
+the remaining doubts with measurement rather than assertion:
+
+- **Diffusion test → it is a real cipher, not a weak homebrew.** Over the unique
+  8-byte ciphertext blocks of the TR-6S app: byte entropy **7.99991/8.0**,
+  chi-square vs uniform **233 (df 255** — a perfect uniform fit), and **zero**
+  Hamming-distance-1 block pairs (random expectation ≈ 2e-8). Code is full of
+  blocks differing in one byte; a substitution/no-diffusion cipher would echo
+  that into near-duplicate ciphertext. Full avalanche ⇒ a proper block cipher.
+  So there is no frequency-analysis or structure shortcut — confirmed, not hoped.
+- **Cipher-constant sweep across every shipped plaintext file → nothing.** No
+  Blowfish π-init, TEA/XTEA/RC5 `0x9e3779b9`, AES S-box, DES S-box, CAST S-box,
+  or Camellia sigma in any of the panel-MCU ARM images, `init_param`, or the
+  updater metadata. The crypto is compiled into **none** of the shipped
+  plaintext parts — consistent with key+decryptor living only in the bootloader.
+- **Crib-based weak/default-key dictionary attack → no match.** Using the crib
+  `E(K, const) = 6B4C9A85 2C732831`, tested **~1,300 candidate keys** (all-zero/
+  -FF, Roland/AIRA/model-ID/App1_Main strings, ASCII tokens scraped from the
+  plaintext binaries, image-header bytes, DES weak/semi-weak keys) × 6 constant
+  guesses against **DES, 3DES, Blowfish, CAST-128, XTEA, TEA**. Nothing. The key
+  is not a guessable default for any common 64-bit cipher. (IDEA/GOST untested —
+  no library — but both have ≥128-bit keys, so a default-key hit is the only way
+  they'd fall, and that's what this ruled out for the others.)
+- **New structural findings (not crypto, but corpus facts):** the updater is a
+  **ustar TAR** of components; the TR-6S app is `App1_Main` = `dd001_m0c0a_up.bin`,
+  ECB. The **AIRA-Compact apps (T8/J6/E4) are NOT ECB** — every 8-byte block is
+  unique (no repetition at all), i.e. a chained mode or compressed-then-encrypted.
+  So the TR and AIRA families differ in *mode*, not just key (see the two-family
+  note above). AIRA gives no crib.
+
+**Conclusion:** the software/cryptanalytic attack surface is exhausted. The key
+was never in the math and never in the ciphertext — that is exactly what a
+working cipher guarantees. Only hardware key/plaintext extraction (the NOR dump,
+`cowbell-8o5`) remains, and it is the DMCA §1201 circumvention line the project
+has deliberately not crossed.
+
 ### "It's ECB, so XOR out the known plaintext and you have everything"
 
 A recurring suggestion, and worth answering precisely because the instinct — ECB
