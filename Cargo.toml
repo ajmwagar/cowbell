@@ -19,6 +19,13 @@ rust-version = "1.74"
 
 # Shared dependency versions so the two CLIs stay in lockstep.
 [workspace.dependencies]
+# The audio/sample engine, developed alongside this workspace. Path-resolved
+# from the workspace root. `default-features = false` is a no-op today
+# (autosample's default feature set is empty) but keeps a future default from
+# silently entering the iOS staticlib. Deliberately NOT enabling `ml`: its
+# model.onnx is a committed 0-byte file, so ONNX inference silently returns
+# None while costing ~78 extra dependencies.
+autosample = { path = "../autosample", default-features = false }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

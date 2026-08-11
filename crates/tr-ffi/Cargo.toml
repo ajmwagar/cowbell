@@ -28,5 +28,6 @@ anyhow.workspace = true
 tr-format = { path = "../tr-format" }
 tr-studio = { path = "../tr-studio" }
 tr-sysex = { path = "../tr-sysex" }
+autosample.workspace = true
 uniffi = { version = "0.32", features = ["cli"] }
 thiserror = "2"

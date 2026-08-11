@@ -38,6 +38,7 @@ use tr_studio::StepGrid;
 
 pub mod device;
 pub mod journal;
+pub mod samples;
 
 pub use journal::{EditKind, EditRecord, EditSpan};
 use journal::Journal;
