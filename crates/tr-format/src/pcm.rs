@@ -62,6 +62,27 @@ use crate::{Backup, Section};
 /// `PCMT` payload stride (`0x10000 / 1024`).
 pub const PCM_TONE_ENTRY_SIZE: usize = 0x40;
 
+/// Record index 0 of the `PCMT` table is **not a tone**.
+///
+/// The payload opens with the same 16-byte array header the `KIT` and `TONE`
+/// sections use — `count` (`0x400`), stride (`0x40`), then an 8-byte
+/// section-level token — which overlays what would otherwise be record 0's
+/// `Address`/`AddressRight`/`Size`/`Start` fields. On the reference backup,
+/// reading record 0 as a tone yields `address = 0x400`, i.e. the record count.
+///
+/// This matters more here than for `KIT`, where the same overlay is harmless
+/// because a kit record's first 16 bytes are unused. For `PCMT` those bytes are
+/// the four most load-bearing fields in the record.
+///
+/// **Unresolved:** whether real entries begin at `payload + 0x10` (the `TONE`
+/// convention — see `TONE_ENTRY_BASE_IN_PAYLOAD` — giving 1023 usable records)
+/// or at `payload + i * 0x40` with index 0 simply sacrificed (the `KIT`
+/// convention). The reference backup has an empty table, so it cannot
+/// distinguish them; a sample-loaded backup would settle it in one look.
+/// Everything below is deliberately written to be correct under **both**
+/// readings: index 0 is refused, and no other index moves.
+pub const PCM_TONE_RESERVED_INDEX: usize = 0;
+
 // Field byte-offsets within a 64-byte record (schema order; see module docs).
 const OFF_ADDRESS: usize = 0x00;
 const OFF_ADDRESS_RIGHT: usize = 0x04;
@@ -142,6 +163,12 @@ impl PcmTone {
 
     /// Whether this record carries a sample (non-zero `EndMax` or `Size`). An
     /// all-zero record is an empty slot.
+    ///
+    /// Note this is a property of the decoded *bytes*: it says nothing about
+    /// whether the index those bytes came from is a real tone slot. Record 0 is
+    /// the section's array header and always looks "populated" — use
+    /// [`Backup::pcm_tone`], which refuses that index, rather than decoding raw
+    /// bytes and asking this.
     pub fn is_populated(&self) -> bool {
         self.size != 0 || self.end_max != 0 || self.address != 0
     }
@@ -156,14 +183,29 @@ impl Section {
         }
         self.payload_len / PCM_TONE_ENTRY_SIZE
     }
+
+    /// Indices that address a real tone record — `1..pcm_tone_count()`.
+    ///
+    /// Index 0 is the section's array header, not a tone; see
+    /// [`PCM_TONE_RESERVED_INDEX`].
+    pub fn pcm_tone_indices(&self) -> std::ops::Range<usize> {
+        let n = self.pcm_tone_count();
+        if n == 0 {
+            0..0
+        } else {
+            (PCM_TONE_RESERVED_INDEX + 1)..n
+        }
+    }
 }
 
 impl Backup {
     /// Decode `PCMT` record `i`, or `None` if there is no `PCMT` section or `i`
     /// is out of range.
+    /// Index 0 is the section's array header rather than a tone, so it is
+    /// refused; see [`PCM_TONE_RESERVED_INDEX`].
     pub fn pcm_tone(&self, i: usize) -> Option<PcmTone> {
         let sec = self.find("PCMT")?;
-        if i >= sec.pcm_tone_count() {
+        if i <= PCM_TONE_RESERVED_INDEX || i >= sec.pcm_tone_count() {
             return None;
         }
         let o = sec.payload_offset + i * PCM_TONE_ENTRY_SIZE;
@@ -173,7 +215,8 @@ impl Backup {
     /// All `PCMT` records (empty if there is no `PCMT` section).
     pub fn pcm_tones(&self) -> Vec<PcmTone> {
         match self.find("PCMT") {
-            Some(sec) => (0..sec.pcm_tone_count())
+            Some(sec) => sec
+                .pcm_tone_indices()
                 .filter_map(|i| self.pcm_tone(i))
                 .collect(),
             None => Vec::new(),
@@ -183,7 +226,8 @@ impl Backup {
     /// Byte offset of `PCMT` record `i` within the file, if it exists.
     fn pcm_tone_offset(&self, i: usize) -> Option<usize> {
         let sec = self.find("PCMT")?;
-        (i < sec.pcm_tone_count()).then(|| sec.payload_offset + i * PCM_TONE_ENTRY_SIZE)
+        (i > PCM_TONE_RESERVED_INDEX && i < sec.pcm_tone_count())
+            .then(|| sec.payload_offset + i * PCM_TONE_ENTRY_SIZE)
     }
 
     /// Rewrite record `i`'s playback window (`Start`/`End`) in place — the core
@@ -267,17 +311,84 @@ mod tests {
         r
     }
 
+    /// The reference backup, if the working copy has one. Not committed (no
+    /// Roland data in the repo), so this skips when absent.
+    fn reference_backup() -> Option<Backup> {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../roland_backup_dump/TR-6S/BACKUP/tr6s_bak.bin"
+        );
+        std::path::Path::new(path)
+            .exists()
+            .then(|| Backup::parse(std::fs::read(path).unwrap()).unwrap())
+    }
+
+    /// The bug this guard exists for, on real data.
+    ///
+    /// The `PCMT` payload opens with the section's array header — count `0x400`,
+    /// stride `0x40`, then a token — which decodes as a tone with
+    /// `address = 0x400`. Before the reserved-index guard, `is_populated()`
+    /// returned true for it on every real backup, so "how many samples are
+    /// loaded" answered 1 on a device with none.
+    #[test]
+    fn the_array_header_is_not_reported_as_a_loaded_sample() {
+        let Some(b) = reference_backup() else { return };
+        let sec = b.find("PCMT").expect("reference backup has a PCMT chunk");
+
+        // The header bytes really do look like a populated tone...
+        let header = PcmTone::from_bytes(
+            &b.raw()[sec.payload_offset..sec.payload_offset + PCM_TONE_ENTRY_SIZE],
+        )
+        .unwrap();
+        assert!(
+            header.is_populated(),
+            "precondition: the raw header bytes look populated"
+        );
+        assert_eq!(header.address, 0x400, "that 'address' is the record count");
+
+        // ...but it is not reachable as a tone, and does not inflate the count.
+        assert!(b.pcm_tone(0).is_none());
+        assert_eq!(
+            b.pcm_tones().iter().filter(|t| t.is_populated()).count(),
+            0,
+            "this backup has no user samples loaded"
+        );
+    }
+
+    /// Neither setter may touch record 0: its `+0x08` field carries a
+    /// section-level token whose algorithm is unresolved, and writing there
+    /// would corrupt it.
+    #[test]
+    fn setters_refuse_the_reserved_index_on_the_real_backup() {
+        let Some(b) = reference_backup() else { return };
+        let before = b.to_bytes();
+        let mut b = b;
+
+        assert!(!b.set_pcm_tone_window(0, 1, 2));
+        assert!(!b.set_pcm_tone_address(0, 1, 2));
+        assert_eq!(b.to_bytes(), before, "a refused write must change nothing");
+    }
+
     #[test]
     fn decodes_records_and_slice_window() {
-        let recs = [record(0x1000, 0x8000, 0, 0x8000), record(0, 0, 0, 0)];
+        // Record 0 stands in for the section's array header — it is never a
+        // tone on a real backup, so the fixture must not put one there either.
+        let recs = [
+            record(0, 0, 0, 0),
+            record(0x1000, 0x8000, 0, 0x8000),
+            record(0, 0, 0, 0),
+        ];
         let raw = synthetic_with_pcmt(&recs, 0x330_0000);
         let b = Backup::parse(raw).unwrap();
 
         assert!(b.find("PCMT").is_some());
-        assert_eq!(b.find("PCMT").unwrap().pcm_tone_count(), 2);
+        assert_eq!(b.find("PCMT").unwrap().pcm_tone_count(), 3);
         assert_eq!(b.sample_region_size(), Some(0x330_0000));
 
-        let t = b.pcm_tone(0).unwrap();
+        // The reserved index is refused rather than decoded as a tone.
+        assert!(b.pcm_tone(0).is_none(), "record 0 is the array header");
+
+        let t = b.pcm_tone(1).unwrap();
         assert_eq!(t.address, 0x1000);
         assert_eq!(t.size, 0x8000);
         assert_eq!(t.start, 0);
@@ -286,13 +397,18 @@ mod tests {
         assert_eq!(t.channel, 1);
         assert_eq!(t.tone_ids[0], 624);
         assert!(t.is_populated());
-        assert!(!b.pcm_tone(1).unwrap().is_populated());
-        assert!(b.pcm_tone(2).is_none());
+        assert!(!b.pcm_tone(2).unwrap().is_populated());
+        assert!(b.pcm_tone(3).is_none());
+
+        // Enumeration skips the header, so it never reports a phantom sample.
+        assert_eq!(b.pcm_tones().len(), 2);
+        assert_eq!(b.find("PCMT").unwrap().pcm_tone_indices(), 1..3);
     }
 
     #[test]
     fn window_edit_is_length_preserving_and_local() {
         let recs = [
+            record(0, 0, 0, 0), // array header slot
             record(0x1000, 0x8000, 0, 0x8000),
             record(0x1000, 0x8000, 0, 0x8000),
         ];
@@ -301,23 +417,27 @@ mod tests {
         let mut b = Backup::parse(raw).unwrap();
 
         // Two slices of ONE sample: same Address, different windows.
-        assert!(b.set_pcm_tone_window(0, 0x100, 0x2000));
-        assert!(b.set_pcm_tone_window(1, 0x2000, 0x4000));
-        assert!(!b.set_pcm_tone_window(2, 0, 1)); // out of range
+        assert!(b.set_pcm_tone_window(1, 0x100, 0x2000));
+        assert!(b.set_pcm_tone_window(2, 0x2000, 0x4000));
+        assert!(!b.set_pcm_tone_window(3, 0, 1)); // out of range
+        // Writing the reserved index would clobber the section token, whose
+        // algorithm is unresolved — refuse rather than corrupt it.
+        assert!(!b.set_pcm_tone_window(0, 0, 1));
+        assert!(!b.set_pcm_tone_address(0, 1, 1));
 
         let after = b.to_bytes();
         assert_eq!(after.len(), before.len(), "edit must be length-preserving");
 
-        let (s0, s1) = (b.pcm_tone(0).unwrap(), b.pcm_tone(1).unwrap());
+        let (s0, s1) = (b.pcm_tone(1).unwrap(), b.pcm_tone(2).unwrap());
         assert_eq!((s0.start, s0.end), (0x100, 0x2000));
         assert_eq!((s1.start, s1.end), (0x2000, 0x4000));
         // Shared sample: both windows into the same PCM address.
         assert_eq!(s0.address, s1.address);
 
-        // Every byte that changed must lie inside a Start/End field of record 0
-        // or record 1 — nothing else in the file moved.
+        // Every byte that changed must lie inside a Start/End field of the two
+        // records we edited — nothing else in the file moved.
         let pcmt = b.find("PCMT").unwrap().payload_offset;
-        let allowed: Vec<std::ops::Range<usize>> = (0..2)
+        let allowed: Vec<std::ops::Range<usize>> = (1..3)
             .flat_map(|i| {
                 let base = pcmt + i * PCM_TONE_ENTRY_SIZE;
                 [

@@ -464,8 +464,12 @@ mod tests {
         v
     }
 
-    /// A backup with a `PCMT` chunk of `records` 64-byte entries; record 0 is a
-    /// "source" sample (address `addr`, EndMax `extent`), the rest are spare.
+    /// A backup with a `PCMT` chunk of `records` 64-byte entries.
+    ///
+    /// Record 0 is left empty: on a real backup that slot is the section's
+    /// 16-byte array header, not a tone, and `Backup::pcm_tone` refuses it.
+    /// Record 1 is the "source" sample (address `addr`, EndMax `extent`); the
+    /// rest are spare slots for slices.
     fn backup_with_pcmt(records: usize, addr: u32, extent: u32) -> Vec<u8> {
         const ENTRY: usize = 0x40;
         let mut v = synthetic_backup();
@@ -475,27 +479,28 @@ mod tests {
         v.extend_from_slice(&payload.to_le_bytes());
         v.extend_from_slice(&0u32.to_le_bytes());
         let mut recs = vec![0u8; records * ENTRY];
-        recs[0x00..0x04].copy_from_slice(&addr.to_le_bytes()); // Address
-        recs[0x08..0x0C].copy_from_slice(&extent.to_le_bytes()); // Size
-        recs[0x14..0x18].copy_from_slice(&extent.to_le_bytes()); // EndMax
+        let src = ENTRY; // record 1 — record 0 is the array header
+        recs[src..src + 4].copy_from_slice(&addr.to_le_bytes()); // Address
+        recs[src + 0x08..src + 0x0C].copy_from_slice(&extent.to_le_bytes()); // Size
+        recs[src + 0x14..src + 0x18].copy_from_slice(&extent.to_le_bytes()); // EndMax
         v.extend_from_slice(&recs);
         v
     }
 
     #[test]
     fn shared_pcm_windows_share_one_address() {
-        // Source record 0 holds the break (addr 0x1000, full length 0x8000).
-        // Records 1..=4 become the four slices.
-        let raw = backup_with_pcmt(5, 0x1000, 0x8000);
+        // Source record 1 holds the break (addr 0x1000, full length 0x8000).
+        // Records 2..=5 become the four slices. Record 0 is the array header.
+        let raw = backup_with_pcmt(6, 0x1000, 0x8000);
         let mut project = Project::open(raw).unwrap();
         let plan = slice_grid(&ramp_wav(64), 4).unwrap(); // 4 windows: 0,16,32,48,64
-        let slice_records = [1usize, 2, 3, 4];
+        let slice_records = [2usize, 3, 4, 5];
 
-        let windows = apply_shared_pcm(&mut project, 0, &plan, &slice_records).unwrap();
+        let windows = apply_shared_pcm(&mut project, 1, &plan, &slice_records).unwrap();
         assert_eq!(windows.len(), 4);
 
         // Proportional to EndMax 0x8000 over 64 frames -> 0x2000 per quarter.
-        let src_addr = project.backup().pcm_tone(0).unwrap().address;
+        let src_addr = project.backup().pcm_tone(1).unwrap().address;
         for (i, w) in windows.iter().enumerate() {
             let rec = project.backup().pcm_tone(w.record_index).unwrap();
             assert_eq!(rec.address, src_addr, "slice {i} shares the source address");
@@ -505,7 +510,9 @@ mod tests {
             );
         }
         // The source itself is untouched.
-        assert_eq!(project.backup().pcm_tone(0).unwrap().start, 0);
+        assert_eq!(project.backup().pcm_tone(1).unwrap().start, 0);
+        // ...and the array-header slot is not addressable as a tone at all.
+        assert!(project.backup().pcm_tone(0).is_none());
 
         // Length-preserving + CRC valid after save.
         let bytes = project.save();
