@@ -73,7 +73,10 @@
 //! - **Persistent-slot base addresses.** [`address`] models the edit buffer
 //!   (`temp`); the captures also show persistent-slot reads at other bases
 //!   (e.g. `37 xx` / `47 xx` for tones), not yet mapped.
-//! - **TR-6S model ID** — needs a TR-6S capture (the TR-8S is confirmed).
+//! - **Device-model field.** The TR-6S and TR-8S share the model ID, so the two
+//!   are distinguished by a separate field (`1` = TR-8S, `2` = TR-6S) that
+//!   nothing here reads yet. Until it does, a caller has to be told which box it
+//!   is talking to rather than asking — which is what the app currently does.
 
 pub mod address;
 pub mod read;
