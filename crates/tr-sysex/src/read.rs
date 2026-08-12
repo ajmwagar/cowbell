@@ -171,10 +171,9 @@ impl DeviceConfig {
         })
     }
 
-    /// The 11 per-voice instrument records of **persistent kit slot** `kit`
-    /// (`0..128`). Each is a 16-byte record; the tone id is decoded, the rest is
-    /// returned raw (its field layout is not yet mapped — see the module scope
-    /// note). Returns `None` if `kit >= 128`.
+    /// The 11 typed per-voice instrument records of **persistent kit slot**
+    /// `kit` (`0..128`) — [`DeviceInstrument`]s decoded from the device wire
+    /// form (`INST TONE … DELAY SEND`). Returns `None` if `kit >= 128`.
     pub fn read_kit_instruments(
         &self,
         port: &mut dyn MidiPort,
