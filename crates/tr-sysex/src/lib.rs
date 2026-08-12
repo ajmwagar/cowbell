@@ -80,6 +80,7 @@
 
 pub mod address;
 pub mod read;
+pub mod wire;
 
 #[cfg(feature = "usb")]
 pub mod midir_port;

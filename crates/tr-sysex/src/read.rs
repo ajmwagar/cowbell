@@ -7,22 +7,19 @@
 //!
 //! ## Scope (and what maps to `tr-format`)
 //!
-//! The device map covers **summary/browse** fields plus the raw per-voice
-//! instrument records, but not yet the full decoded parameter set. The
-//! "send pattern/kit" capture located each kit's **11 × 16-byte instrument
-//! blocks** at known addresses ([`crate::address::KIT_INSTRUMENT`],
-//! surfaced by [`DeviceConfig::read_kit_instruments`]) — but the 14 param bytes
-//! after the tone id are still an **undecoded device encoding**; the backup's
-//! `VoiceParams` is the decoded reference for the same knobs. Pattern **step
-//! words** and **FX** blocks have no confirmed device addresses (that capture
-//! transferred only pattern headers — name + kit reference). So a *full*
-//! byte-exact [`tr_format::Kit`]/`Pattern`/`Sys` reconstruction over SysEx is
-//! **not yet possible**; it needs the instrument-block field decode and a
-//! step/FX capture (tracked separately). Where a field does correspond to a
-//! `tr-format` concept the types line up (a device category name is the same
-//! string as `tr_format::Sys::category_name`, a tone id indexes the same tone
-//! table), but the values here are plain strings/ints/bytes on purpose — no
-//! lossy struct is fabricated from partial data.
+//! The device parameter map is the **same schema as the backup format**,
+//! re-based to the device's SysEx regions (recovered device-free from TR
+//! Editor's `Script.xml` + sender code — `cowbell-uqk`). Values ride the wire
+//! in the [`crate::wire`] nibble encoding. This module decodes the browse
+//! fields plus **typed per-voice instrument records** ([`DeviceInstrument`] via
+//! [`DeviceConfig::read_kit_instruments`] / [`DeviceConfig::write_kit_instrument`]
+//! — the same knobs as `tr_format::VoiceParams`, read/written live). The kit's
+//! effect sub-structs (`kitRev`/`kitDly`/`kitMfx`/`kitExtIn`) and pattern
+//! variations (`ptnVar`) are addressable too ([`crate::address::kit_sub`],
+//! [`crate::address::pattern_variation`]) — those are the same records
+//! `tr-format` decodes, so extending typed reads/writes to them is
+//! re-addressing known structs. Field values line up with `tr-format` by
+//! design; nothing lossy is fabricated.
 
 use anyhow::{ensure, Result};
 
@@ -47,16 +44,74 @@ pub struct DevicePattern {
     pub kit_reference: u16,
 }
 
-/// One instrument slot of a kit, as it lives on the device: a 16-byte record
-/// whose first two bytes are the tone id. The remaining bytes are the device's
-/// (still undecoded) encoding of the per-voice parameters — kept raw rather than
-/// forced into a lossy struct. See [`crate::address::KIT_INSTRUMENT`].
+/// One instrument slot of a kit (`instCommon`), decoded from the device wire
+/// form. These are the same per-voice parameters `tr_format::VoiceParams`
+/// exposes in the backup — here read live over SysEx. Field widths and the
+/// nibble wire encoding are `Script.xml`-attested and confirmed on real capture
+/// data (see [`crate::wire`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInstrument {
-    /// `kit.toneId` — indexes the same tone table as `tr_format`.
-    pub tone_id: u16,
-    /// The full 16-byte record exactly as returned by the device.
-    pub raw: [u8; 16],
+    /// `INST TONE` (`0..=1023`) — indexes the same tone table as `tr_format`.
+    pub tone: u16,
+    /// `INST TUNE` (`0..=255`, centre 128).
+    pub tune: u8,
+    /// `INST DECAY` (`0..=255`).
+    pub decay: u8,
+    /// `INST LEVEL` (`0..=255`).
+    pub level: u8,
+    /// `INST GAIN` (`0..=161`).
+    pub gain: u8,
+    /// `INST PAN` (`0..=255`, centre 128).
+    pub pan: u8,
+    /// `INST REVERB SEND` (`0..=255`).
+    pub reverb_send: u8,
+    /// `INST DELAY SEND` (`0..=255`).
+    pub delay_send: u8,
+}
+
+/// Wire length of an `instCommon` record through `DELAY SEND`: `INST TONE`
+/// (`int4x4`, 4) + 7 × `int2x4` (2 each).
+pub const INSTRUMENT_WIRE_LEN: u32 = 4 + 7 * 2;
+
+impl DeviceInstrument {
+    /// Decode the leading `INST TONE … DELAY SEND` fields of a kit instrument
+    /// record from its wire bytes. Returns `None` if `bytes` is too short.
+    pub fn from_wire(bytes: &[u8]) -> Option<DeviceInstrument> {
+        use crate::wire::decode_nibbles;
+        if (bytes.len() as u32) < INSTRUMENT_WIRE_LEN {
+            return None;
+        }
+        Some(DeviceInstrument {
+            tone: decode_nibbles(&bytes[0..4]) as u16,
+            tune: decode_nibbles(&bytes[4..6]) as u8,
+            decay: decode_nibbles(&bytes[6..8]) as u8,
+            level: decode_nibbles(&bytes[8..10]) as u8,
+            gain: decode_nibbles(&bytes[10..12]) as u8,
+            pan: decode_nibbles(&bytes[12..14]) as u8,
+            reverb_send: decode_nibbles(&bytes[14..16]) as u8,
+            delay_send: decode_nibbles(&bytes[16..18]) as u8,
+        })
+    }
+
+    /// Encode this instrument to its [`INSTRUMENT_WIRE_LEN`]-byte wire form
+    /// (`INST TONE … DELAY SEND`) — the inverse of [`from_wire`](Self::from_wire).
+    pub fn to_wire(&self) -> Vec<u8> {
+        use crate::wire::encode_nibbles;
+        let mut v = Vec::with_capacity(INSTRUMENT_WIRE_LEN as usize);
+        v.extend_from_slice(&encode_nibbles(self.tone as u32, 4));
+        for field in [
+            self.tune,
+            self.decay,
+            self.level,
+            self.gain,
+            self.pan,
+            self.reverb_send,
+            self.delay_send,
+        ] {
+            v.extend_from_slice(&encode_nibbles(field as u32, 2));
+        }
+        v
+    }
 }
 
 /// The current tone's browse fields.
@@ -131,20 +186,35 @@ impl DeviceConfig {
         let mut out = Vec::with_capacity(field.count as usize);
         for i in 0..field.count {
             let addr = field.nth(i).expect("i < count");
-            let bytes = self.read(port, addr, field.size)?;
-            ensure!(
-                bytes.len() == 16,
-                "instrument record {i}: expected 16 bytes, got {}",
-                bytes.len()
-            );
-            let mut raw = [0u8; 16];
-            raw.copy_from_slice(&bytes);
-            out.push(DeviceInstrument {
-                tone_id: decode_base128(&raw[0..2]) as u16,
-                raw,
-            });
+            let bytes = self.read(port, addr, INSTRUMENT_WIRE_LEN)?;
+            let voice = DeviceInstrument::from_wire(&bytes).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "instrument record {i}: expected {INSTRUMENT_WIRE_LEN} wire bytes, got {}",
+                    bytes.len()
+                )
+            })?;
+            out.push(voice);
         }
         Ok(Some(out))
+    }
+
+    /// Write one instrument slot (`inst < 11`) of kit `kit` (`0..128`) — sends a
+    /// DT1 with the instrument's [`INSTRUMENT_WIRE_LEN`]-byte wire form to its
+    /// device address. Returns `false` if `kit`/`inst` is out of range.
+    /// (Whether the device persists this to flash vs the edit buffer depends on
+    /// the addressed slot — see [`crate::address`].)
+    pub fn write_kit_instrument(
+        &self,
+        port: &mut dyn MidiPort,
+        kit: u32,
+        inst: u32,
+        voice: &DeviceInstrument,
+    ) -> Result<bool> {
+        let Some(addr) = address::kit_instruments(kit).and_then(|f| f.nth(inst)) else {
+            return Ok(false);
+        };
+        self.write(port, addr, &voice.to_wire())?;
+        Ok(true)
     }
 
     /// All user category names (`sys.categoryName`, 32 × 16 bytes).
@@ -260,27 +330,64 @@ mod tests {
     }
 
     #[test]
-    fn reads_kit_instruments_decoding_tone_ids() {
+    fn reads_kit_instruments_decoding_the_wire_form() {
         let cfg = DeviceConfig::tr8s(0x10);
-        // Answer each instrument read with a 16-byte record whose first two
-        // bytes encode tone id = (address byte 2 - 0x10) in base-128.
-        let mut port = dev(|addr, _len| {
-            let inst = (addr.bytes()[2] - 0x10) as u16;
-            let mut v = vec![0u8; 16];
-            v[0] = (inst >> 7) as u8;
-            v[1] = (inst & 0x7f) as u8;
-            v[15] = 0xAB; // a param byte we keep raw
-            v
-        });
+        // Reply with the real "KiNK 1" instrument-0 wire bytes for every slot:
+        // level 0f 0f = 255, pan 08 00 = 128, gain 05 03 = 83, tone 00 00 0c 01.
+        let real0 = [
+            0x00, 0x00, 0x0c, 0x01, // INST TONE = 193
+            0x07, 0x02, // TUNE = 114
+            0x08, 0x01, // DECAY = 129
+            0x0f, 0x0f, // LEVEL = 255
+            0x05, 0x03, // GAIN = 83
+            0x08, 0x00, // PAN = 128
+            0x00, 0x00, // REVERB SEND = 0
+            0x02, 0x0e, // DELAY SEND = 46
+        ];
+        let mut port = dev(move |_addr, len| real0[..len as usize].to_vec());
         let insts = cfg.read_kit_instruments(&mut port, 126).unwrap().unwrap();
         assert_eq!(insts.len(), 11);
+        let v = &insts[0];
+        assert_eq!(v.tone, 193);
         assert_eq!(
-            insts.iter().map(|d| d.tone_id).collect::<Vec<_>>(),
-            (0..11).collect::<Vec<_>>()
+            (v.tune, v.decay, v.level, v.gain, v.pan),
+            (114, 129, 255, 83, 128)
         );
-        assert!(insts.iter().all(|d| d.raw[15] == 0xAB));
+        assert_eq!((v.reverb_send, v.delay_send), (0, 46));
         // Out-of-range kit yields None, not an error.
         assert!(cfg.read_kit_instruments(&mut port, 128).unwrap().is_none());
+    }
+
+    #[test]
+    fn instrument_wire_round_trips_and_writes_a_dt1() {
+        let cfg = DeviceConfig::tr8s(0x10);
+        let v = DeviceInstrument {
+            tone: 512,
+            tune: 200,
+            decay: 64,
+            level: 255,
+            gain: 81,
+            pan: 128,
+            reverb_send: 30,
+            delay_send: 46,
+        };
+        // to_wire -> from_wire is lossless, and 7-bit-safe.
+        let wire = v.to_wire();
+        assert_eq!(wire.len(), INSTRUMENT_WIRE_LEN as usize);
+        assert!(wire.iter().all(|&b| b <= 0x0f));
+        assert_eq!(DeviceInstrument::from_wire(&wire).unwrap(), v);
+
+        // write_kit_instrument sends a DT1 our parser accepts, at kit 5 inst 2's
+        // address, carrying the encoded voice.
+        let mut port = dev(|_a, _l| vec![]);
+        assert!(cfg.write_kit_instrument(&mut port, 5, 2, &v).unwrap());
+        let sent = cfg.parse(&port.last_reply).unwrap();
+        assert_eq!(sent.command, CMD_DT1);
+        assert_eq!(
+            sent.address,
+            address::kit_instruments(5).unwrap().nth(2).unwrap()
+        );
+        assert!(!cfg.write_kit_instrument(&mut port, 5, 99, &v).unwrap()); // inst OOR
     }
 
     #[test]
