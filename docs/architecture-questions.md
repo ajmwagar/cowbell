@@ -12,11 +12,12 @@ the reasoning trail survives.
       big-TR-box chip (`Roland BMC`, lot 5100440716, TR-8S teardown); E4E is the
       AIRA Compact chip (`Roland E4E`, lot 5100069694, Beat 8). BMC is NOT just
       ACB marketing. ESC2 unobserved in any photo we hold. See `hardware.md`.
-- [x] ~~**Is the TR-6S main SoC E4E?**~~ → **No — almost certainly BMC.** The
-      key-sharing sibling TR-8S is photographed as `Roland BMC`, and TR-6S↔TR-8S
-      share the key (16 KB identical ciphertext run), load map, and 66k blocks →
-      same main SoC. Strong inference via the *key-sharing* sibling. A first-party
-      TR-6S board photo would make it airtight; still outstanding.
+- [x] ~~**Is the TR-6S main SoC E4E?**~~ → **No — it is BMC, now FIRST-PARTY
+      CONFIRMED (2026-09-01).** The maintainer opened their own unit: the
+      `DD001 MAIN BOARD NAK ASSY 5100076052` carries `Roland BMC` (date `2152`),
+      and both the main and jack boards are silkscreened `DD001` (= TR-6S). The
+      earlier "strong inference via the key-sharing TR-8S" is now direct
+      observation. See `hardware.md` first-party teardown section.
 - [ ] **ISA / architecture of the BMC audio SoC** (TR-6S/TR-8S) — ARM
       (Cortex-A/-M/-R?), Tensilica/Xtensa DSP, SuperH, or custom? *Leading
       hypothesis: ARM,* unconfirmed because `App1_Main` is encrypted. Evidence:
@@ -36,7 +37,14 @@ the reasoning trail survives.
 ## Memory map
 
 - [ ] How is the **64 MB NOR** presented — execute-in-place, or copied to SDRAM
-      at boot?
+      at boot? *(Package/location now first-party confirmed: `S29GL512S10TFI02`,
+      TSOP-56, top side beside the BMC — see `hardware.md`. XIP-vs-copy is still
+      open, answerable from a dump.)*
+- [ ] **What is on the internal microSD socket?** The DD001 main board has a
+      populated microSD push-socket despite the TR-6S having no user-facing SD
+      slot (first-party, 2026-09-01). Could be sample/OS storage — a potentially
+      cheap read route. Pull the card and image it (own content; handle any
+      Roland factory data per the no-distribution policy). NEW item.
 - [ ] How is the **32 MB SDRAM** partitioned (code, heap, ACB voice state,
       audio buffers)?
 - [ ] Are the two ESMT SDRAM devices a single 32-bit bus or two 16-bit banks?
@@ -98,7 +106,13 @@ the reasoning trail survives.
       itself, but now a *fallback* behind the Beat 8 route: the update archive
       contains no plaintext code, so ISA/memory-map/boot-flow all depend on
       reading real code off silicon. 56-ball TSOP — in-circuit read or chip-off.
-- [ ] Identify a JTAG/SWD or UART debug pad on the PCB.
+      *(2026-09-01: first-party photos confirm the NOR is TSOP-56 on the top
+      side right beside the BMC — accessible without desoldering the SoC, which
+      makes this route more attractive than the "fallback" framing implies.)*
+- [ ] Identify a JTAG/SWD or UART debug pad on the PCB. *(Lead, 2026-09-01: an
+      `SW1` DIP switch silkscreened `TMS` sits near the BMC — `TMS` is a JTAG
+      signal, so this may be a boot-mode/debug-config switch. Probe the pads
+      around SW1 and the BMC first. See `hardware.md` / `prior-art.md`.)*
 - [ ] Confirm the compute chip's ISA so a disassembler target can be chosen.
       **Not answerable from the update image** — the only code it contains is
       behind the cipher.

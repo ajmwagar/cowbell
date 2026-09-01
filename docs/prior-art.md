@@ -65,7 +65,29 @@ hardware, and the TR-6S board differs):
 At teardown-footage resolution, **individual debug pads (JTAG/SWD/UART) cannot
 be resolved.** Debug-pad identification must be done first-party on the TR-6S.
 
-## First-party recon checklist (do this when opening the TR-6S)
+## First-party TR-6S teardown (2026-09-01) — corrections to the above
+
+The maintainer opened their own TR-6S and photographed the boards. This
+**supersedes the TR-8S-footage guesses** for the TR-6S itself (full detail in
+`hardware.md`):
+
+- **NOR is on the TOP/component side**, right beside the BMC — *not* the reverse
+  side the TR-8S footage implied. Package **confirmed TSOP-56** (`Spansion
+  S29GL512S10TFI02`). So a top-side in-circuit clip or chip-off is viable
+  without flipping/desoldering around the SoC.
+- **Main SoC confirmed `Roland BMC`** on the actual TR-6S (date `2152`); boards
+  silkscreened `DD001` (= TR-6S).
+- **A microSD socket *is* present** on the DD001 main board — correcting the
+  "TR-6S has none" note above (there's no *user-facing* slot, but the board has
+  an internal socket). Possible easy data route; investigate.
+- **Debug lead:** an `SW1` DIP switch silkscreened **`TMS`** (a JTAG signal)
+  sits near the BMC — the highest-priority spot to probe per the checklist below.
+
+## First-party recon checklist (mostly done — remaining probing)
+
+Photos captured (2026-09-01): BMC neighborhood, main-board top face, jack board.
+Still to do: **back face of the main board** (locate the 2nd SDRAM + any
+reverse-side pads), and active probing of the `SW1`/`TMS` cluster.
 
 Photos to capture:
 

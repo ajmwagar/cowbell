@@ -1,15 +1,49 @@
 # Hardware — TR-6S chip ID findings
 
 Running notes on the parts inside the Roland TR-6S. **Provenance:** the
-maintainer has **not** opened their unit (owned ~1 day as of 2026-08-07); part
-IDs here are from **third-party online teardowns/photos**, not first-party
-inspection. The E4E/STM32G0 findings specifically come from Reddit photos of a
-sibling **Beat 8**, not a TR-6S. Nothing here is confirmed by Roland or by
-first-party inspection; treat every line as "best current understanding" until
-corroborated. Getting a clear photo of the **TR-6S main SoC** is an open task —
-it would confirm whether the TR-6S main chip is the same E4E seen on the Beat 8.
+maintainer **opened their own TR-6S on 2026-09-01** and photographed the boards
+— so the TR-6S main-board parts below are now **first-party confirmed** (see the
+teardown section immediately following). The **E4E / STM32G0** findings are a
+separate matter: those still come from third-party Reddit photos of a sibling
+**Beat 8** and are *not* about the TR-6S. Lines outside the first-party teardown
+section remain "best current understanding" until corroborated.
 
-## Compute / main SoC — TR-6S almost certainly BMC
+## First-party teardown (2026-09-01) — the big confirmations
+
+From the maintainer's own unit. Board silkscreen ties the physical hardware to
+the `dd001` firmware model code directly:
+
+- **Main board:** `DD001 MAIN BOARD NAK ASSY 5100076052`, "A Side", Roland,
+  "MADE IN JAPAN / ASSEMBLED IN MALAYSIA".
+- **Jack board:** `DD001 JACK BOARD ASSY 5100070378`, "MADE IN MALAYSIA".
+
+So **`dd001` = TR-6S is now silkscreen-confirmed**, not inferred from the update
+archive.
+
+| Part | Marking (as read from the photo) | Confirms |
+| ---- | -------------------------------- | -------- |
+| **Main SoC** | `Roland BMC`, date `2152` (wk52 2021), sticker `76052A221000220`, "JAPAN", large BGA | **TR-6S main chip is BMC — first-party.** Removes the "not first-party" caveat; the earlier chain went through the TR-8S teardown, this is the actual TR-6S. |
+| **NOR flash** | `Spansion S29GL512S10TFI02` / `128BB085 D` / `©10 SPANSION`, **TSOP-56** | The 64 MB NOR — and it sits on the **top/component side, right beside the BMC** (see the recon correction below). |
+| **SDRAM** | `ESMT M12L128168A-6T` `AZS2P0FLE`, date `2104`, TSOP | ESMT SDRAM confirmed on the real TR-6S (vs. ISSI on the TR-8S — the expected per-product vendor difference). One device visible on the top side; a second likely on the reverse (the 2×=32 MB claim is not yet fully verified from these top-side shots). |
+
+Two new leads from the same photos:
+
+- **Internal microSD socket on the main board.** The DD001 main board carries a
+  microSD push-socket (center of the board). The TR-6S has **no user-facing SD
+  slot**, so this is either internal storage (samples/OS?) or a populated
+  footprint from the shared TR-8S board lineage. **Worth investigating** — if it
+  holds readable data it could be a far cheaper route than a NOR dump. Contents
+  unknown; handle per the no-distribution policy (it may carry Roland factory
+  content).
+- **`SW1` DIP switch with a `TMS` silkscreen**, near the BMC (bottom-right of the
+  main-board photo). `TMS` is the JTAG Test-Mode-Select signal — a **candidate
+  boot-mode / debug-config lead** for the debug-pad hunt in `prior-art.md`.
+  Tentative: the label is legible but the switch's actual function is unverified.
+
+Board photos are the maintainer's own and are **not committed** to the repo
+(keeping docs text-only); findings are transcribed here.
+
+## Compute / main SoC — TR-6S is BMC (first-party confirmed 2026-09-01)
 
 Two distinct, confirmed Roland custom SoCs now anchor this. The **big TR boxes
 use BMC**; the **AIRA Compact line uses E4E**:
@@ -48,8 +82,12 @@ container/CRC scheme, and 66k shared blocks. Roland ties that key + bootloader +
 memory map to a hardware platform, so the two boxes almost certainly run the
 **same main SoC** — and the TR-8S one is directly photographed as BMC. This is a
 **stronger** chain than the E4E lead was: it runs through the *key-sharing*
-sibling, not a different-key cousin. Still not first-party; a TR-6S board photo
-would make it airtight.
+sibling, not a different-key cousin.
+
+**Update (2026-09-01): now first-party.** The maintainer's own TR-6S main board
+(`DD001 MAIN BOARD NAK ASSY 5100076052`) carries `Roland BMC` (date `2152`)
+directly — the inference chain above is no longer needed. See the first-party
+teardown section at the top.
 
 ### E4E — confirmed discrete Roland SoC (AIRA Compact line), 2026-08-07
 
@@ -111,17 +149,25 @@ Marking not yet matched to a datasheet; confirm before assuming.
 
 ## Confirmed memory parts
 
-These are legible from package markings and are considered confirmed:
+Legible from package markings and, as of 2026-09-01, **confirmed first-party**
+on the maintainer's own board (see the teardown section above):
 
-- **SDRAM:** 2× **ESMT M12L128168A**
-  - 128 Mbit each (8M × 16), so 2× 16 MB = **32 MB** total working RAM.
+- **SDRAM:** **ESMT M12L128168A-6T** (`AZS2P0FLE`, date `2104`)
+  - 128 Mbit each (8M × 16) = 16 MB per device. The working assumption is **2×
+    = 32 MB** total; one device is visible on the top side of the first-party
+    photos, so the second (and thus the full 32 MB) is *inferred*, likely on the
+    reverse — verify with a back-side photo.
   - 16-bit data bus per device; likely run as a 32-bit bus across the pair, or
     two independent 16-bit banks — TBD from trace-out.
-- **NOR flash:** **Infineon / Cypress S29GL512S10TFI020**
+- **NOR flash:** **Spansion / Infineon S29GL512S10TFI02** (marking `128BB085 D`,
+  `©10 SPANSION`)
   - 512 Mbit = **64 MB** parallel NOR.
-  - S29GL-S family, 110 ns, TFI (56-ball) package, 3 V.
-  - Almost certainly holds the firmware image + sample/wavetable ROM data.
-    This is the primary carving target for `fw-analyze`.
+  - S29GL-S family, **TSOP-56** package, 3 V.
+  - Located on the **top/component side of the main board, immediately beside
+    the BMC** (first-party) — *not* the reverse side that the TR-8S footage
+    suggested. Same-side + TSOP (not BGA) makes in-circuit or chip-off dumping
+    materially easier. This is the primary carving target for `fw-analyze` and
+    the key-recovery route (`cowbell-8o5`).
 
 ## Working memory-map hypotheses (unverified)
 
